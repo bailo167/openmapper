@@ -253,7 +253,8 @@ fn live(action: LiveAction) -> Result<(), String> {
             let mut last = None;
             let mut seen = 0;
             while Instant::now() < deadline {
-                if let Some(f) = feed.wait_newer_than(seen, Duration::from_millis(100)) {
+                om_platform::pump_events(Duration::from_millis(50));
+                if let Some(f) = feed.newer_than(seen) {
                     seen = f.seq;
                     last = Some(f.image);
                 }

@@ -174,3 +174,56 @@ released). OSCQuery is served with tiny_http and advertised via mdns-sd;
 LISTEN/WebSocket streaming is deferred. Audio-reactive levels come from the
 playback mix (no microphone permission needed); a live input source can be
 added later.
+
+## D-020 — Live I/O model (2026-10-07)
+
+Live devices and senders are identified **by name** (camera name, stream
+URL, NDI source name, Syphon server/app, Spout sender), never by index,
+port or session id, so they are found again after unplugging, re-ordering
+or restarting. Live feeds keep **only the newest frame**; a source that
+stops is reopened with exponential back-off (250 ms → 4 s) while **the
+last good frame stays visible**. Publishing is the mirror image:
+submission never blocks the renderer, and a failed sink reopens itself.
+Frames cross the **CPU** (RGBA8 readback/upload) for now; a zero-copy GPU
+path can replace it without format changes. Cameras use FFmpeg's capture
+devices on all three OSes, so there is **no `om-live-input` crate**.
+`om-platform` (layer 4) is the single place the app and CLI obtain
+adapters, and the `Adapters` bundle lives in `om-media-core` so lower
+layers can carry it without depending on adapters.
+
+## D-021 — Syphon and Spout implementation (2026-10-07)
+
+**Syphon**: the BSD Syphon framework is vendored as source at a pinned
+commit and compiled with `cc` into a static library, with a small
+Objective-C shim exposing a C API. This avoids installing or shipping
+`Syphon.framework`. The only patch makes the Metal renderer compile its
+shaders from embedded source when no framework bundle exists. Discovery
+needs the main thread's run loop (distributed notifications); the GUI's
+event loop provides it, and the CLI and tests pump it explicitly.
+**Spout**: implemented natively in Rust (`windows` crate) following the
+Spout 2 SDK's shared-memory directory, description block, access mutex,
+frame-count semaphore and legacy DXGI shared textures, rather than
+building the C++ SDK. It is smaller, has no C++ toolchain dependency, and
+keeps the protocol testable on all OSes (format unit tests). The sender
+blocks on a GPU event query before releasing the access mutex, so
+receivers never copy an incomplete texture.
+
+## D-022 — NDI via the user's installed runtime (2026-10-07)
+
+OpenMapper does not bundle, download or redistribute NDI, and does not
+accept the NDI SDK licence on anyone's behalf. `om-ndi` loads an
+already-installed NDI runtime with `libloading` and declares only the few
+public C entry points and plain structures it calls. A missing runtime is
+a normal, reported condition. The NDI adapter stays
+**implemented-unverified** until tested on a machine with the runtime
+(`OM_REQUIRE_NDI=1`). Redistribution and trademark use remain a release
+gate (docs/PLAN.md: NDI/vendor SDK redistribution audit).
+
+## D-023 — DeckLink deferred (2026-10-07)
+
+No DeckLink hardware is available, and the DeckLink SDK has its own
+licence terms. The `om-decklink` adapter is deferred until a card is
+available for physical verification (docs/PLAN.md hardware policy). SDI
+needs can be met meanwhile through NDI or network streams. The project
+format needs no change for it: a later `decklink` live input/publish type
+is an additive schema change.

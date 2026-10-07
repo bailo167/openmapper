@@ -39,3 +39,14 @@ pub fn adapters() -> Adapters {
         sinks: Some(Arc::new(SinkOpeners(sinks))),
     }
 }
+
+/// Waits `d` while delivering the platform's main-thread events that
+/// adapters depend on (Syphon discovery on macOS). Command-line tools call
+/// this from the main thread instead of sleeping; GUI event loops already
+/// deliver these events.
+pub fn pump_events(d: std::time::Duration) {
+    #[cfg(target_os = "macos")]
+    om_syphon::run_main_loop(d);
+    #[cfg(not(target_os = "macos"))]
+    std::thread::sleep(d);
+}

@@ -49,6 +49,34 @@ Persistent geometry uses finite validated floating-point values.
 Time uses exact integer/rational representations.
 NaN and Infinity are rejected on load and on command validation.
 
+## Live media and publishing
+
+A media item's `source` may be live instead of file-backed (docs/live-io.md):
+
+```json
+{ "kind": "live", "input": { "type": "camera", "device": "FaceTime HD Camera" } }
+{ "kind": "live", "input": { "type": "stream", "url": "srt://:9000?mode=listener" } }
+{ "kind": "live", "input": { "type": "ndi", "source": "STUDIO (Main)" } }
+{ "kind": "live", "input": { "type": "syphon", "server": "Main", "app": "Resolume" } }
+{ "kind": "live", "input": { "type": "spout", "sender": "Main" } }
+```
+
+Devices and senders are stored by name, not index (`app` may be omitted
+to match any application). Each output may also publish its frames, with
+at most 8 targets:
+
+```json
+"publish": [
+  { "type": "syphon", "name": "OpenMapper Output 1" },
+  { "type": "stream", "url": "srt://192.168.1.20:9000", "codec": "compatible", "fps": 30 }
+]
+```
+
+`codec` is `compatible` (MPEG-2/TS, default) or `lossless` (FFV1/MKV,
+`tcp`/`srt` only); `fps` is one of 24, 25, 30, 50, 60. Names are 1–255
+bytes. Both lists are validated on load and by the `SetOutputPublish`
+command.
+
 ## Recovery
 
 Normal save:
