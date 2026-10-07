@@ -1,0 +1,55 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/om-types",
+    "crates/om-time",
+    "crates/om-project",
+    "crates/om-command",
+    "crates/om-engine",
+    "crates/om-ui-egui",
+    "apps/openmapper",
+    "apps/openmapper-cli",
+    "tools/xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "Apache-2.0"
+repository = "https://github.com/bailo167/openmapper"
+publish = false
+
+[workspace.dependencies]
+om-types = { path = "crates/om-types" }
+om-time = { path = "crates/om-time" }
+om-project = { path = "crates/om-project" }
+om-command = { path = "crates/om-command" }
+om-engine = { path = "crates/om-engine" }
+om-ui-egui = { path = "crates/om-ui-egui" }
+
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
+thiserror = "2.0.21"
+ulid = "3.0.0"
+clap = { version = "4.6.7", features = ["derive"] }
+anyhow = "1.0.104"
+tempfile = "3.27.0"
+proptest = "1.11.0"
+# GUI/GPU stack: pinned exactly, upgraded only in dedicated PRs (docs/PLAN.md).
+egui = "=0.36.2"
+eframe = { version = "=0.36.2", default-features = false, features = ["wgpu", "default_fonts", "accesskit", "wayland", "x11"] }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+dbg_macro = "deny"
+
+[profile.release]
+debug = "line-tables-only"

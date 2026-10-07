@@ -46,7 +46,7 @@ observable input → output statements, e.g.
 > Given normalized quad corners A..D, moving upper-right X from 0.8 to 0.9
 > while all other parameters are constant produces this observable mapping…
 
-and never as implementation detail ("function sub_100A32 uses constant 0x…").
+and never as implementation detail ("function sub_XXXXXX uses constant 0x…").
 
 The CI provenance check (`cargo xtask provenance`) rejects tracked files that
 look like reference evidence or binary-analysis output.

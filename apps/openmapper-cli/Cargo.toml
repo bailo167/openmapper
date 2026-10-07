@@ -1,0 +1,25 @@
+[package]
+name = "openmapper-cli"
+description = "OpenMapper deterministic command-line interface"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "openmapper-cli"
+path = "src/main.rs"
+
+[dependencies]
+om-project.workspace = true
+om-command.workspace = true
+om-engine.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

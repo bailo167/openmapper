@@ -1,0 +1,20 @@
+[package]
+name = "om-engine"
+description = "OpenMapper session orchestration: document lifecycle, persistence, recovery"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+om-types.workspace = true
+om-project.workspace = true
+om-command.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

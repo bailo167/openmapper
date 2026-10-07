@@ -1,0 +1,37 @@
+{
+  "format": "openmapper-project",
+  "version": 1,
+  "project_id": "00000000000000000000000001",
+  "revision": 0,
+  "name": "Sample",
+  "timebase": {
+    "ticks_per_second": "254016000000"
+  },
+  "media": [],
+  "surfaces": [
+    {
+      "id": "00000000000000000000000002",
+      "name": "Quad 1",
+      "enabled": true,
+      "opacity": 1.0,
+      "extensions": {}
+    }
+  ],
+  "outputs": [],
+  "show": {
+    "cues": [],
+    "timelines": []
+  },
+  "extensions": {
+    "org.example.future": {
+      "a": "keep me",
+      "z": [
+        1,
+        2,
+        {
+          "nested": true
+        }
+      ]
+    }
+  }
+}
