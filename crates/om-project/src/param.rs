@@ -9,7 +9,7 @@
 use std::fmt;
 use std::str::FromStr;
 
-use om_types::{MediaId, SurfaceId};
+use om_types::{FixtureId, MediaId, SurfaceId};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// One controllable value.
@@ -26,6 +26,9 @@ pub enum ParamId {
     MediaVolume(MediaId),
     /// A numeric or bool input of a shader generator.
     ShaderInput(MediaId, String),
+    /// LED fixture output level, 0..=1.
+    FixtureBrightness(FixtureId),
+    FixtureEnabled(FixtureId),
 }
 
 /// Kind and range of a parameter's value.
@@ -94,6 +97,8 @@ impl fmt::Display for ParamId {
             Self::MediaSpeed(id) => write!(f, "media/{id}/speed"),
             Self::MediaVolume(id) => write!(f, "media/{id}/volume"),
             Self::ShaderInput(id, name) => write!(f, "media/{id}/input/{name}"),
+            Self::FixtureBrightness(id) => write!(f, "fixture/{id}/brightness"),
+            Self::FixtureEnabled(id) => write!(f, "fixture/{id}/enabled"),
         }
     }
 }
@@ -111,6 +116,10 @@ impl FromStr for ParamId {
             ["surface", id, "enabled"] => Self::SurfaceEnabled(id.parse().map_err(|_| bad())?),
             ["media", id, "speed"] => Self::MediaSpeed(id.parse().map_err(|_| bad())?),
             ["media", id, "volume"] => Self::MediaVolume(id.parse().map_err(|_| bad())?),
+            ["fixture", id, "brightness"] => {
+                Self::FixtureBrightness(id.parse().map_err(|_| bad())?)
+            }
+            ["fixture", id, "enabled"] => Self::FixtureEnabled(id.parse().map_err(|_| bad())?),
             ["media", id, "input", name] if !name.is_empty() => {
                 Self::ShaderInput(id.parse().map_err(|_| bad())?, (*name).to_owned())
             }
@@ -149,6 +158,8 @@ mod tests {
             ParamId::MediaSpeed(m),
             ParamId::MediaVolume(m),
             ParamId::ShaderInput(m, "scale".into()),
+            ParamId::FixtureBrightness(FixtureId::from_u128(3)),
+            ParamId::FixtureEnabled(FixtureId::from_u128(3)),
         ] {
             let text = p.to_string();
             assert_eq!(text.parse::<ParamId>().unwrap(), p, "{text}");

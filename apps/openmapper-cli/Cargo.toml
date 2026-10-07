@@ -20,6 +20,7 @@ om-render.workspace = true
 om-output.workspace = true
 om-media-core.workspace = true
 om-platform.workspace = true
+om-dmx.workspace = true
 om-media-ffmpeg.workspace = true
 om-time.workspace = true
 image.workspace = true

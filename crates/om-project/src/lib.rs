@@ -8,6 +8,7 @@
 //!
 //! This crate defines *data* only. Mutations go through `om-command`.
 
+pub mod dmx;
 mod migrate;
 pub mod param;
 mod schema;
@@ -75,6 +76,7 @@ impl Project {
             show: Show::default(),
             master: Master::default(),
             controls: Controls::default(),
+            dmx: dmx::Dmx::default(),
             extensions: Extensions::new(),
         }
     }
@@ -192,6 +194,9 @@ impl Project {
                     return invalid(format!("output {}: {e}", o.id));
                 }
             }
+        }
+        if let Err(e) = self.dmx.validate() {
+            return invalid(format!("DMX: {e}"));
         }
         Ok(())
     }

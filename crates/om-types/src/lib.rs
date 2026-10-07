@@ -8,5 +8,6 @@ mod id;
 
 pub use finite::{Finite, NonFiniteError, UnitInterval};
 pub use id::{
-    CueId, IdParseError, MediaId, ModulatorId, OutputId, ProjectId, SurfaceId, TimelineId,
+    CueId, DmxNodeId, FixtureId, IdParseError, MediaId, ModulatorId, OutputId, ProjectId,
+    SurfaceId, TimelineId,
 };

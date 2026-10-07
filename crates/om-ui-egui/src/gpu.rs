@@ -31,6 +31,8 @@ pub struct Viewer {
     pub media: MediaRuntime,
     /// Syphon/Spout/NDI/stream publishing of the output frame.
     pub publish: PublishRuntime,
+    /// Art-Net/sACN output sampled from the canvas (LED pixel mapping).
+    pub dmx: om_dmx::DmxRuntime,
     reader: FrameReader,
     mixer: Option<om_audio::Mixer>,
     _audio_out: Option<om_audio::Output>,
@@ -94,6 +96,7 @@ impl Viewer {
             media: MediaRuntime::with_audio(adapters.video.clone(), audio)
                 .with_live(adapters.live.clone()),
             publish: PublishRuntime::new(adapters.sinks.clone()),
+            dmx: om_dmx::DmxRuntime::new(),
             reader: FrameReader::new(&render_state.device, &render_state.queue),
             mixer,
             _audio_out: audio_out,
@@ -132,12 +135,22 @@ impl Viewer {
         };
         let rendered = self.render(project, &inputs);
         self.publish.sync(project);
-        if self.publish.is_active() {
+        self.dmx.sync(project);
+        if self.publish.is_active() || self.dmx.is_active() {
             if let (Ok(_), Some(p)) = (&rendered, &self.preview) {
                 self.reader.capture(&p.texture);
             }
             if let Some(frame) = self.reader.poll() {
-                self.publish.submit_all(&Arc::new(frame));
+                if self.dmx.is_active() {
+                    self.dmx.submit(&om_dmx::mapping::FrameView {
+                        width: frame.width(),
+                        height: frame.height(),
+                        rgba8: frame.rgba8(),
+                    });
+                }
+                if self.publish.is_active() {
+                    self.publish.submit_all(&Arc::new(frame));
+                }
             }
         }
         match rendered {

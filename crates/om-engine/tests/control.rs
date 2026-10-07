@@ -76,6 +76,37 @@ fn setup() -> (Session, Transport, Live, u16, u16) {
             index: None,
         })
         .unwrap();
+    // A fixture, so its brightness and enabled parameters are covered too.
+    let node = om_project::dmx::DmxNode {
+        id: om_types::DmxNodeId::from_u128(3),
+        name: "node".into(),
+        enabled: false,
+        protocol: om_project::dmx::DmxProtocol::ArtNet {
+            address: "127.0.0.1".into(),
+        },
+    };
+    session
+        .execute(Command::PutDmxNode { node, index: None })
+        .unwrap();
+    session
+        .execute(Command::PutFixture {
+            fixture: om_project::dmx::Fixture {
+                id: om_types::FixtureId::from_u128(4),
+                name: "strip".into(),
+                enabled: true,
+                node: om_types::DmxNodeId::from_u128(3),
+                universe: 0,
+                address: 1,
+                order: Default::default(),
+                encoding: Default::default(),
+                brightness: om_types::UnitInterval::ONE,
+                shape: om_project::dmx::PixelShape::Point {
+                    at: om_geom::Point2::new(0.5, 0.5).unwrap(),
+                },
+            },
+            index: None,
+        })
+        .unwrap();
     let (osc, query) = (free_port(), free_tcp_port());
     let mut controls = session.project().controls.clone();
     controls.osc_port = osc;
@@ -111,7 +142,12 @@ fn pump(
 fn every_parameter_round_trips_over_osc_and_oscquery() {
     let (mut session, mut transport, mut live, osc, query) = setup();
     let infos = params::list(session.project());
-    assert!(infos.len() >= 6, "{infos:?}");
+    assert!(infos.len() >= 8, "{infos:?}");
+    assert!(
+        infos
+            .iter()
+            .any(|i| i.id.to_string().starts_with("fixture/"))
+    );
     for info in infos {
         let (arg, want) = match info.kind {
             ParamKind::Bool => {

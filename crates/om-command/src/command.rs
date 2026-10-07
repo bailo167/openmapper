@@ -138,6 +138,29 @@ pub enum Command {
     RemoveModulator {
         id: om_types::ModulatorId,
     },
+    /// Inserts a DMX node, or replaces the node with the same id.
+    PutDmxNode {
+        node: om_project::dmx::DmxNode,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        index: Option<usize>,
+    },
+    /// Removes a DMX node no fixture uses.
+    RemoveDmxNode {
+        id: om_types::DmxNodeId,
+    },
+    /// Inserts a fixture, or replaces the fixture with the same id.
+    PutFixture {
+        fixture: om_project::dmx::Fixture,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        index: Option<usize>,
+    },
+    RemoveFixture {
+        id: om_types::FixtureId,
+    },
+    /// DMX refresh rate (packets per second per universe, 1–44).
+    SetDmxRate {
+        rate: u32,
+    },
     /// Sets (`Some`) or removes (`None`) a project-level extension payload.
     SetExtension {
         key: String,
@@ -164,6 +187,7 @@ pub enum Event {
     MasterChanged,
     ControlsChanged,
     ShowChanged,
+    DmxChanged,
     ExtensionChanged { key: String },
 }
 
@@ -667,6 +691,95 @@ impl Command {
                     events: vec![Event::ShowChanged],
                 })
             }
+            Self::PutDmxNode { node, index } => {
+                check_name(&node.name)?;
+                let list = &mut project.dmx.nodes;
+                let inverse = match list.iter().position(|n| n.id == node.id) {
+                    Some(at) => Self::PutDmxNode {
+                        node: std::mem::replace(&mut list[at], node.clone()),
+                        index: Some(at),
+                    },
+                    None => {
+                        if list.len() >= om_project::dmx::MAX_NODES {
+                            return Err(CommandError::Invalid("too many DMX nodes".into()));
+                        }
+                        insert_at(list, node.clone(), *index)?;
+                        Self::RemoveDmxNode { id: node.id }
+                    }
+                };
+                Ok(Applied {
+                    inverse,
+                    events: vec![Event::DmxChanged],
+                })
+            }
+            Self::RemoveDmxNode { id } => {
+                if let Some(f) = project.dmx.fixtures.iter().find(|f| f.node == *id) {
+                    return Err(CommandError::Invalid(format!(
+                        "DMX node {id} is still used by fixture \"{}\"",
+                        f.name
+                    )));
+                }
+                let list = &mut project.dmx.nodes;
+                let at = list.iter().position(|n| n.id == *id).ok_or_else(|| {
+                    CommandError::Invalid(format!("DMX node {id} does not exist"))
+                })?;
+                let node = list.remove(at);
+                Ok(Applied {
+                    inverse: Self::PutDmxNode {
+                        node,
+                        index: Some(at),
+                    },
+                    events: vec![Event::DmxChanged],
+                })
+            }
+            Self::PutFixture { fixture, index } => {
+                fixture.validate().map_err(CommandError::Invalid)?;
+                let list = &mut project.dmx.fixtures;
+                let inverse = match list.iter().position(|f| f.id == fixture.id) {
+                    Some(at) => Self::PutFixture {
+                        fixture: std::mem::replace(&mut list[at], fixture.clone()),
+                        index: Some(at),
+                    },
+                    None => {
+                        if list.len() >= om_project::dmx::MAX_FIXTURES {
+                            return Err(CommandError::Invalid("too many fixtures".into()));
+                        }
+                        insert_at(list, fixture.clone(), *index)?;
+                        Self::RemoveFixture { id: fixture.id }
+                    }
+                };
+                Ok(Applied {
+                    inverse,
+                    events: vec![Event::DmxChanged],
+                })
+            }
+            Self::RemoveFixture { id } => {
+                let list = &mut project.dmx.fixtures;
+                let at = list
+                    .iter()
+                    .position(|f| f.id == *id)
+                    .ok_or_else(|| CommandError::Invalid(format!("fixture {id} does not exist")))?;
+                let fixture = list.remove(at);
+                Ok(Applied {
+                    inverse: Self::PutFixture {
+                        fixture,
+                        index: Some(at),
+                    },
+                    events: vec![Event::DmxChanged],
+                })
+            }
+            Self::SetDmxRate { rate } => {
+                if !om_project::dmx::DMX_RATES.contains(rate) {
+                    return Err(CommandError::Invalid(format!(
+                        "DMX rate {rate} is not 1–44"
+                    )));
+                }
+                let old = std::mem::replace(&mut project.dmx.rate, *rate);
+                Ok(Applied {
+                    inverse: Self::SetDmxRate { rate: old },
+                    events: vec![Event::DmxChanged],
+                })
+            }
             Self::SetExtension { key, value } => {
                 if key.is_empty() {
                     return Err(CommandError::EmptyExtensionKey);
@@ -719,6 +832,11 @@ impl Command {
             Self::RemoveTimeline { .. } => "Remove Timeline",
             Self::PutModulator { .. } => "Edit Modulator",
             Self::RemoveModulator { .. } => "Remove Modulator",
+            Self::PutDmxNode { .. } => "Edit DMX Node",
+            Self::RemoveDmxNode { .. } => "Remove DMX Node",
+            Self::PutFixture { .. } => "Edit Fixture",
+            Self::RemoveFixture { .. } => "Remove Fixture",
+            Self::SetDmxRate { .. } => "DMX Rate",
         }
     }
 }

@@ -227,3 +227,24 @@ available for physical verification (docs/PLAN.md hardware policy). SDI
 needs can be met meanwhile through NDI or network streams. The project
 format needs no change for it: a later `decklink` live input/publish type
 is an additive schema change.
+
+## D-024 — DMX output and pixel-mapping model (2026-10-07)
+
+LED fixtures **sample the final canvas**, the same CPU readback used for
+publishing, so master, cues and effects apply without special cases.
+Fixture placement is in normalised canvas space like surfaces. Sampling
+averages each pixel's footprint in **linear light**; the default channel
+encoding is **sRGB**, matching what a monitor shows, with `linear` as an
+option. RGBW white is the common part of R, G and B. Pixels never straddle
+universes, which is the common LED-controller convention. The sender
+refreshes every universe at a fixed project rate (default 40 Hz, at most
+44, the DMX512 frame-rate ceiling) rather than only on change, because
+receivers time out on silence. Art-Net sequences skip 0. sACN uses the
+project id as its CID, so a project keeps its identity across restarts,
+and it terminates streams on stop. ArtSync and sACN synchronisation are
+not sent yet: every universe of a frame is sent back-to-back, and fixtures
+that need tearing-free latching across universes are a later option.
+DMX **input** (Art-Net/sACN as a control source) is deferred to the
+control work in a later milestone; `dmx monitor` covers diagnostics. The
+physical node test stays pending hardware, so the DMX parity rows are
+verified in software and the node row is implemented-unverified.

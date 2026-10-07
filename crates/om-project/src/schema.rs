@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 
 use om_geom::Point2;
 
+use crate::dmx::Dmx;
 use crate::show::{Controls, Master, Show};
 use om_time::{DEFAULT_TICKS_PER_SECOND, I128Str, Rate, Speed};
 use om_types::{Finite, MediaId, OutputId, ProjectId, SurfaceId, UnitInterval};
@@ -46,6 +47,9 @@ pub struct Project {
     pub master: Master,
     #[serde(default)]
     pub controls: Controls,
+    /// DMX nodes and LED fixtures (docs/dmx.md).
+    #[serde(default, skip_serializing_if = "Dmx::is_empty")]
+    pub dmx: Dmx,
     #[serde(default)]
     pub extensions: Extensions,
 }
@@ -946,6 +950,6 @@ pub struct DisplayTarget {
     pub index: u32,
 }
 
-fn default_true() -> bool {
+pub(crate) fn default_true() -> bool {
     true
 }

@@ -77,6 +77,36 @@ at most 8 targets:
 bytes. Both lists are validated on load and by the `SetOutputPublish`
 command.
 
+## DMX and LED fixtures
+
+Optional `dmx` section (omitted when empty; see docs/dmx.md):
+
+```json
+"dmx": {
+  "rate": 40,
+  "nodes": [
+    { "id": "…", "name": "Pixel node", "enabled": true,
+      "protocol": { "type": "art_net", "address": "2.255.255.255" } },
+    { "id": "…", "name": "sACN", "enabled": true,
+      "protocol": { "type": "sacn", "priority": 100 } }
+  ],
+  "fixtures": [
+    { "id": "…", "name": "Strip", "enabled": true, "node": "…",
+      "universe": 1, "address": 1, "order": "grb", "encoding": "srgb", "brightness": 1.0,
+      "shape": { "kind": "line", "from": [0.1, 0.5], "to": [0.9, 0.5], "count": 60 } },
+    { "id": "…", "name": "Matrix", "node": "…", "universe": 2, "address": 1,
+      "shape": { "kind": "grid", "corners": [[0.3,0.2],[0.7,0.2],[0.7,0.8],[0.3,0.8]],
+                 "columns": 16, "rows": 16, "wiring": "rows_snake" } }
+  ]
+}
+```
+
+Validation: rate 1–44; node addresses are IPv4 (sACN may be empty, which
+means multicast); fixture `address` 1–512 with its first pixel fitting;
+1–65536 pixels; every fixture's universes within its node's protocol
+range (Art-Net 0–32767, sACN 1–63999); ids unique; nodes referenced by
+fixtures cannot be removed.
+
 ## Recovery
 
 Normal save:

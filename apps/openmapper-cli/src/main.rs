@@ -73,6 +73,43 @@ enum Action {
         #[command(subcommand)]
         action: LiveAction,
     },
+    /// DMX: find Art-Net nodes, watch incoming DMX, or show the channel
+    /// values a project's fixtures send.
+    Dmx {
+        #[command(subcommand)]
+        action: DmxAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum DmxAction {
+    /// Broadcast ArtPoll and list the Art-Net nodes that answer (needs UDP
+    /// port 6454 free).
+    Discover {
+        /// Broadcast address of the lighting network.
+        #[arg(long, default_value = "255.255.255.255")]
+        broadcast: String,
+        #[arg(long, default_value_t = 2)]
+        seconds: u64,
+    },
+    /// Print the Art-Net and sACN universes arriving at this machine.
+    Monitor {
+        /// sACN universes to join (multicast); Art-Net needs no list.
+        #[arg(long)]
+        sacn: Vec<u16>,
+        #[arg(long, default_value_t = 10)]
+        seconds: u64,
+    },
+    /// Render a project frame and print the DMX its fixtures would send.
+    Frame {
+        path: PathBuf,
+        /// Show time in seconds.
+        #[arg(long, default_value_t = 0.0)]
+        at: f64,
+        /// Print `{"<node>/<universe>": [512 values]}` instead of text.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -203,6 +240,7 @@ fn run(cli: Cli) -> Result<(), String> {
         }
         Action::Soak { path, seconds } => soak(&path, seconds),
         Action::Live { action } => live(action),
+        Action::Dmx { action } => dmx(action),
     }
 }
 
@@ -375,6 +413,161 @@ fn render(path: &Path, out: &Path, at: f64) -> Result<(), String> {
     image::save_buffer(out, &pixels, w, h, image::ExtendedColorType::Rgba8)
         .map_err(|e| format!("writing {}: {e}", out.display()))?;
     println!("rendered {}x{} -> {}", w, h, out.display());
+    Ok(())
+}
+
+fn dmx(action: DmxAction) -> Result<(), String> {
+    match action {
+        DmxAction::Discover { broadcast, seconds } => {
+            let ip: std::net::Ipv4Addr = broadcast
+                .parse()
+                .map_err(|_| format!("{broadcast:?} is not an IPv4 address"))?;
+            let target = std::net::SocketAddr::from((ip, om_dmx::artnet::PORT));
+            let nodes = om_dmx::net::discover_artnet(
+                om_dmx::artnet::PORT,
+                target,
+                Duration::from_secs(seconds),
+            )
+            .map_err(|e| format!("Art-Net discovery: {e} (is another Art-Net program running?)"))?;
+            if nodes.is_empty() {
+                println!("no Art-Net nodes answered");
+            }
+            for n in nodes {
+                let outs: Vec<String> = n.outputs.iter().map(u16::to_string).collect();
+                println!(
+                    "{}  {} ({})  outputs: {}",
+                    n.ip,
+                    n.short_name,
+                    n.long_name,
+                    outs.join(", ")
+                );
+            }
+            Ok(())
+        }
+        DmxAction::Monitor { sacn, seconds } => dmx_monitor(&sacn, seconds),
+        DmxAction::Frame { path, at, json } => dmx_frame(&path, at, json),
+    }
+}
+
+fn dmx_monitor(sacn: &[u16], seconds: u64) -> Result<(), String> {
+    use std::net::{Ipv4Addr, UdpSocket};
+    let mut sockets = Vec::new();
+    match UdpSocket::bind((Ipv4Addr::UNSPECIFIED, om_dmx::artnet::PORT)) {
+        Ok(s) => sockets.push(s),
+        Err(e) => eprintln!("Art-Net: cannot listen on port 6454: {e}"),
+    }
+    if !sacn.is_empty() {
+        let s = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, om_dmx::sacn::PORT))
+            .map_err(|e| format!("sACN: cannot listen on port 5568: {e}"))?;
+        for u in sacn {
+            s.join_multicast_v4(&om_dmx::sacn::multicast_group(*u), &Ipv4Addr::UNSPECIFIED)
+                .map_err(|e| format!("sACN universe {u}: {e}"))?;
+        }
+        sockets.push(s);
+    }
+    if sockets.is_empty() {
+        return Err("nothing to listen on".into());
+    }
+    for s in &sockets {
+        s.set_nonblocking(true).map_err(|e| e.to_string())?;
+    }
+    let deadline = Instant::now() + Duration::from_secs(seconds);
+    let mut seen: std::collections::BTreeMap<(&'static str, u16), (u64, Vec<u8>)> =
+        std::collections::BTreeMap::new();
+    let mut next_print = Instant::now() + Duration::from_secs(1);
+    let mut buf = [0u8; 1500];
+    while Instant::now() < deadline {
+        let mut idle = true;
+        for s in &sockets {
+            while let Ok((n, _)) = s.recv_from(&mut buf) {
+                idle = false;
+                if let Some(r) = om_dmx::net::parse(&buf[..n]) {
+                    let e = seen.entry((r.protocol, r.universe)).or_default();
+                    e.0 += 1;
+                    e.1 = r.data;
+                }
+            }
+        }
+        if Instant::now() >= next_print {
+            for ((protocol, universe), (count, data)) in &seen {
+                let head: Vec<String> = data.iter().take(12).map(u8::to_string).collect();
+                println!(
+                    "{protocol} {universe}: {count} pkt/s  [{} …]",
+                    head.join(" ")
+                );
+            }
+            if !seen.is_empty() {
+                println!();
+            }
+            seen.values_mut().for_each(|v| v.0 = 0);
+            next_print += Duration::from_secs(1);
+        }
+        if idle {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+    Ok(())
+}
+
+fn dmx_frame(path: &Path, at: f64, json: bool) -> Result<(), String> {
+    let (project, mut compositor, mut media) = prepare(path)?;
+    let t = seconds(at)?;
+    let inputs = load_media(
+        &project,
+        path.parent(),
+        &mut compositor,
+        &mut media,
+        t,
+        true,
+    );
+    let report = compositor
+        .render_with(&project, &inputs)
+        .map_err(|e| e.to_string())?;
+    let pixels = compositor.read_rgba8().map_err(|e| e.to_string())?;
+    let (w, h) = report.canvas;
+    let frame = om_dmx::mapping::FrameView {
+        width: w,
+        height: h,
+        rgba8: &pixels,
+    };
+    let plans: Vec<_> = project
+        .dmx
+        .fixtures
+        .iter()
+        .filter(|f| f.enabled)
+        .map(om_dmx::mapping::FixturePlan::new)
+        .collect();
+    let universes =
+        om_dmx::mapping::render_fixtures(&plans, &om_dmx::mapping::Sampler::default(), &frame);
+    let node_name = |id| {
+        project
+            .dmx
+            .nodes
+            .iter()
+            .find(|n| n.id == id)
+            .map_or_else(|| id.to_string(), |n| n.name.clone())
+    };
+    if json {
+        let map: serde_json::Map<String, serde_json::Value> = universes
+            .iter()
+            .map(|((node, u), data)| {
+                (
+                    format!("{}/{u}", node_name(*node)),
+                    serde_json::Value::from(data.to_vec()),
+                )
+            })
+            .collect();
+        println!("{}", serde_json::Value::Object(map));
+    } else {
+        if universes.is_empty() {
+            println!("no enabled fixtures");
+        }
+        for ((node, u), data) in &universes {
+            let used = data.iter().rposition(|&v| v != 0).map_or(0, |i| i + 1);
+            let values: Vec<String> = data[..used].iter().map(u8::to_string).collect();
+            println!("{} universe {u}: {}", node_name(*node), values.join(" "));
+        }
+    }
     Ok(())
 }
 

@@ -4,6 +4,7 @@
 //! mutates the project directly.
 
 mod canvas;
+mod dmx_ui;
 mod gpu;
 mod live_ui;
 mod show_ui;
@@ -50,6 +51,7 @@ pub struct OpenMapperApp {
     effective: Option<om_project::Project>,
     show_tab: show_ui::ShowTab,
     live_ui: live_ui::LiveUi,
+    dmx_ui: dmx_ui::DmxUi,
     displays: Vec<Display>,
     display_error: Option<String>,
     last_poll: Option<Instant>,
@@ -98,6 +100,7 @@ impl OpenMapperApp {
             live: om_engine::live::Live::new(),
             effective: None,
             show_tab: show_ui::ShowTab::Cues,
+            dmx_ui: dmx_ui::DmxUi::default(),
             live_ui: live_ui::LiveUi::new(adapters.live.clone().map(om_engine::Discovery::new)),
         };
         if app.viewer.is_none() {
@@ -305,6 +308,8 @@ impl OpenMapperApp {
             self.media_list(ui);
             ui.separator();
             self.output_list(ui);
+            ui.separator();
+            self.dmx_panel(ui);
         });
     }
 
@@ -1169,6 +1174,8 @@ impl OpenMapperApp {
             Stroke::new(1.0, Color32::from_gray(80)),
             egui::StrokeKind::Outside,
         );
+
+        self.draw_fixtures(&painter, rect);
 
         // Outlines for every surface; handles for the selected one.
         let project = self.session.project();

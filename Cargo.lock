@@ -2916,12 +2916,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "om-dmx"
+version = "0.1.0"
+dependencies = [
+ "om-geom",
+ "om-project",
+ "om-types",
+ "proptest",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "om-engine"
 version = "0.1.0"
 dependencies = [
  "image",
  "om-audio",
  "om-command",
+ "om-geom",
  "om-isf",
  "om-media-core",
  "om-media-ffmpeg",
@@ -3146,6 +3158,7 @@ dependencies = [
  "egui",
  "om-audio",
  "om-command",
+ "om-dmx",
  "om-engine",
  "om-geom",
  "om-gpu",
@@ -3188,6 +3201,7 @@ dependencies = [
  "clap",
  "image",
  "om-command",
+ "om-dmx",
  "om-engine",
  "om-gpu",
  "om-media-core",

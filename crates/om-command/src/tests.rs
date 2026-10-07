@@ -299,8 +299,129 @@ fn arb_new_command() -> impl Strategy<Value = Command> {
     ]
 }
 
+fn arb_dmx_command() -> impl Strategy<Value = Command> {
+    use om_project::dmx::{ColourOrder, DmxNode, DmxProtocol, Fixture, PixelShape};
+    use om_types::{DmxNodeId, FixtureId};
+    let nid = (1u128..4).prop_map(DmxNodeId::from_u128);
+    let fid = (1u128..5).prop_map(FixtureId::from_u128);
+    prop_oneof![
+        (
+            nid.clone(),
+            any::<bool>(),
+            any::<bool>(),
+            proptest::option::of(0usize..3)
+        )
+            .prop_map(|(id, enabled, sacn, index)| Command::PutDmxNode {
+                node: DmxNode {
+                    id,
+                    name: "n".into(),
+                    enabled,
+                    protocol: if sacn {
+                        DmxProtocol::Sacn {
+                            address: String::new(),
+                            priority: 100,
+                        }
+                    } else {
+                        DmxProtocol::ArtNet {
+                            address: "10.0.0.1".into(),
+                        }
+                    },
+                },
+                index,
+            }),
+        nid.clone().prop_map(|id| Command::RemoveDmxNode { id }),
+        (fid.clone(), nid, 0u16..3, 1u16..520, 0u32..400).prop_map(
+            |(id, node, universe, address, count)| Command::PutFixture {
+                fixture: Fixture {
+                    id,
+                    name: "f".into(),
+                    enabled: true,
+                    node,
+                    universe,
+                    address,
+                    order: ColourOrder::Rgb,
+                    encoding: Default::default(),
+                    brightness: UnitInterval::ONE,
+                    shape: PixelShape::Line {
+                        from: Point2::new(0.0, 0.0).unwrap(),
+                        to: Point2::new(1.0, 1.0).unwrap(),
+                        count,
+                    },
+                },
+                index: None,
+            }
+        ),
+        fid.prop_map(|id| Command::RemoveFixture { id }),
+        (0u32..50).prop_map(|rate| Command::SetDmxRate { rate }),
+    ]
+}
+
 fn arb_command() -> impl Strategy<Value = Command> {
-    prop_oneof![arb_old_command(), arb_new_command()]
+    prop_oneof![arb_old_command(), arb_new_command(), arb_dmx_command()]
+}
+
+#[test]
+fn dmx_nodes_in_use_cannot_be_removed() {
+    use om_project::dmx::{DmxNode, DmxProtocol, Fixture, PixelShape};
+    use om_types::{DmxNodeId, FixtureId};
+    let mut d = Document::new(project());
+    let node = DmxNode {
+        id: DmxNodeId::from_u128(1),
+        name: "Node".into(),
+        enabled: true,
+        protocol: DmxProtocol::ArtNet {
+            address: "10.0.0.9".into(),
+        },
+    };
+    d.execute(Command::PutDmxNode { node, index: None })
+        .unwrap();
+    let fixture = Fixture {
+        id: FixtureId::from_u128(2),
+        name: "Strip".into(),
+        enabled: true,
+        node: DmxNodeId::from_u128(1),
+        universe: 0,
+        address: 1,
+        order: Default::default(),
+        encoding: Default::default(),
+        brightness: UnitInterval::ONE,
+        shape: PixelShape::Point {
+            at: Point2::new(0.5, 0.5).unwrap(),
+        },
+    };
+    let r = d
+        .execute(Command::PutFixture {
+            fixture: fixture.clone(),
+            index: None,
+        })
+        .unwrap();
+    assert_eq!(r.events, vec![Event::DmxChanged]);
+    assert!(
+        d.execute(Command::RemoveDmxNode {
+            id: DmxNodeId::from_u128(1)
+        })
+        .is_err()
+    );
+    // A fixture pointing at a missing node is refused by validation.
+    let mut orphan = fixture;
+    orphan.id = FixtureId::from_u128(3);
+    orphan.node = DmxNodeId::from_u128(9);
+    assert!(
+        d.execute(Command::PutFixture {
+            fixture: orphan,
+            index: None
+        })
+        .is_err()
+    );
+    d.execute(Command::RemoveFixture {
+        id: FixtureId::from_u128(2),
+    })
+    .unwrap();
+    d.execute(Command::RemoveDmxNode {
+        id: DmxNodeId::from_u128(1),
+    })
+    .unwrap();
+    assert!(d.project().dmx.is_empty());
 }
 
 fn arb_old_command() -> impl Strategy<Value = Command> {
