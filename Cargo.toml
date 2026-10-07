@@ -18,6 +18,8 @@ members = [
     "crates/om-oscquery",
     "crates/om-midi",
     "crates/om-engine",
+    "crates/om-spout",
+    "crates/om-ndi",
     "crates/om-platform",
     "crates/om-ui-egui",
     "apps/openmapper",
@@ -46,6 +48,8 @@ om-render = { path = "crates/om-render" }
 om-output = { path = "crates/om-output" }
 om-media-ffmpeg = { path = "crates/om-media-ffmpeg" }
 om-platform = { path = "crates/om-platform" }
+om-spout = { path = "crates/om-spout" }
+om-ndi = { path = "crates/om-ndi" }
 om-audio = { path = "crates/om-audio" }
 om-isf = { path = "crates/om-isf" }
 om-show = { path = "crates/om-show" }
@@ -84,6 +88,20 @@ ffmpeg-next = "9.0.0"
 # macOS capture-device enumeration (names match FFmpeg's avfoundation input).
 objc2-av-foundation = "0.3.2"
 cpal = "0.18.2"
+# Spout (Windows): shared memory, named mutexes and D3D11 shared textures.
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+    "Win32_System_Registry",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+] }
+# NDI: the user's installed runtime is loaded at run time, never bundled.
+libloading = "0.8.9"
 rosc = "0.11.4"
 tiny_http = "0.12.0"
 mdns-sd = "0.21.5"

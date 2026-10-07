@@ -3007,6 +3007,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "om-ndi"
+version = "0.1.0"
+dependencies = [
+ "libloading 0.8.9",
+ "om-media-core",
+ "om-project",
+]
+
+[[package]]
 name = "om-osc"
 version = "0.1.0"
 dependencies = [
@@ -3044,6 +3053,8 @@ version = "0.1.0"
 dependencies = [
  "om-media-core",
  "om-media-ffmpeg",
+ "om-ndi",
+ "om-spout",
 ]
 
 [[package]]
@@ -3085,6 +3096,16 @@ dependencies = [
  "om-project",
  "om-time",
  "om-types",
+]
+
+[[package]]
+name = "om-spout"
+version = "0.1.0"
+dependencies = [
+ "half",
+ "om-media-core",
+ "om-project",
+ "windows",
 ]
 
 [[package]]

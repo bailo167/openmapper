@@ -1,0 +1,16 @@
+[package]
+name = "om-ndi"
+description = "OpenMapper NDI adapter: uses an NDI runtime already installed on the machine (never bundled)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+om-media-core.workspace = true
+om-project.workspace = true
+libloading.workspace = true
+
+[lints]
+workspace = true

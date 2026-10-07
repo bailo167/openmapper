@@ -1,6 +1,6 @@
 [package]
-name = "om-platform"
-description = "OpenMapper platform assembly: the media, live-input and publishing adapters available on this OS"
+name = "om-spout"
+description = "OpenMapper Spout adapter (Windows): send and receive Spout 2 senders"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,11 +9,11 @@ publish.workspace = true
 
 [dependencies]
 om-media-core.workspace = true
-om-media-ffmpeg.workspace = true
-om-ndi.workspace = true
+om-project.workspace = true
+half.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-om-spout.workspace = true
+windows.workspace = true
 
 [lints]
 workspace = true
