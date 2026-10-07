@@ -1,0 +1,38 @@
+# Parity rows for milestone 3. Status ladder: docs/PLAN.md.
+- feature: media.video.frame-exact
+  priority: P0
+  status: cross-platform-pending
+  source: [public-doc]
+  tests: [every_frame_boundary_selects_the_exact_frame, random_access_seeks_are_exact, render_at_selects_exact_video_frame]
+  notes: 23.976/25/29.97/60 fps; MKV (ms timestamps) and MP4 with B-frames.
+  known_differences: []
+- feature: media.video.no-drift
+  priority: P0
+  status: verified-macos
+  tests: [ten_minutes_without_drift]
+  notes: 35,994 display ticks over 10 min at 29.97 fps, one seek. Nightly gate C.
+- feature: media.loop-speed-reverse
+  priority: P0
+  status: cross-platform-pending
+  tests: [media_time_loops_clamps_and_reverses, looping_playback_wraps_without_jumps, runtime_plays_video_at_show_time_and_loops]
+  notes: Reverse is smooth only with intra-only codecs (docs/media/playback.md).
+- feature: media.image-sequence
+  priority: P0
+  status: cross-platform-pending
+  tests: [natural_order_and_exact_timing, sequences_play_from_folders]
+- feature: media.audio.sync
+  priority: P0
+  status: cross-platform-pending
+  tests: [burst_onsets_land_on_exact_seconds, seeks_are_sample_exact, video_frames_and_audio_samples_line_up_on_the_show_clock]
+  notes: Device output verified manually on macOS (built-in speakers); CI has no audio devices.
+- feature: media.audio.speed
+  priority: P1
+  status: gap
+  notes: Audio muted at non-1x speed until time-stretching exists (D-015).
+- feature: media.corrupt-and-missing
+  priority: P0
+  status: cross-platform-pending
+  tests: [corrupt_and_missing_files_fail_cleanly, missing_files_and_missing_opener_are_reported]
+- feature: media.thumbnails
+  priority: P1
+  status: implemented

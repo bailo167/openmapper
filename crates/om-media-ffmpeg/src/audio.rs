@@ -52,39 +52,67 @@ unsafe impl Send for Resampler {}
 
 #[allow(unsafe_code)]
 impl Resampler {
-    fn new(
-        in_format: ff::format::Sample,
-        in_layout: &ff::ChannelLayout,
-        in_rate: u32,
-        out_rate: u32,
-    ) -> Result<Self, String> {
+    /// Builds a converter from `frame`'s format/layout/rate. Uses FFmpeg's
+    /// AVChannelLayout API directly (FFmpeg >= 5.1) so behaviour does not
+    /// depend on the binding's channel-layout wrapper.
+    fn new(frame: &ff::frame::Audio, out_rate: u32) -> Result<Self, String> {
         let mut ctx: *mut ff::ffi::SwrContext = std::ptr::null_mut();
-        let out_layout = ff::ChannelLayout::STEREO;
-        let in_fmt: ff::ffi::AVSampleFormat = in_format.into();
+        // SAFETY: zeroed AVChannelLayout is the documented "uninitialised"
+        // state; av_channel_layout_default fills a native layout.
+        let mut out_layout: ff::ffi::AVChannelLayout = unsafe { std::mem::zeroed() };
+        unsafe { ff::ffi::av_channel_layout_default(&raw mut out_layout, 2) };
+        // SAFETY: the frame's AVFrame is valid; ch_layout is read only.
+        let (order, channels) = unsafe {
+            let l = &(*frame.as_ptr()).ch_layout;
+            (l.order, l.nb_channels)
+        };
+        let channels = if channels > 0 { channels } else { 2 };
+        // An unspecified channel order (e.g. PCM in Matroska) is treated as
+        // the default layout for its channel count.
+        let mut in_layout: ff::ffi::AVChannelLayout = unsafe { std::mem::zeroed() };
+        let copied = if order == ff::ffi::AVChannelOrder::AV_CHANNEL_ORDER_UNSPEC {
+            // SAFETY: `in_layout` is a zeroed, owned AVChannelLayout.
+            unsafe { ff::ffi::av_channel_layout_default(&raw mut in_layout, channels) };
+            0
+        } else {
+            // SAFETY: source is the frame's valid layout; destination is an
+            // owned zeroed layout that we uninit below.
+            unsafe {
+                ff::ffi::av_channel_layout_copy(&raw mut in_layout, &(*frame.as_ptr()).ch_layout)
+            }
+        };
+        if copied < 0 {
+            return Err(format!("av_channel_layout_copy failed ({copied})"));
+        }
+        let in_fmt: ff::ffi::AVSampleFormat = frame.format().into();
+        let in_rate = frame.rate();
         // SAFETY: all pointers are valid for the call: `ctx` is a local out
-        // parameter, the layouts are live AVChannelLayout values copied by
-        // FFmpeg, and the log context may be null. On success `ctx` owns a
+        // parameter, the layouts are live AVChannelLayout values (copied by
+        // FFmpeg), and the log context may be null. On success `ctx` owns a
         // new SwrContext that `Drop` frees.
         let ret = unsafe {
             ff::ffi::swr_alloc_set_opts2(
                 &raw mut ctx,
-                &raw const out_layout.0,
+                &raw const out_layout,
                 ff::ffi::AVSampleFormat::AV_SAMPLE_FMT_FLT,
                 i32::try_from(out_rate).unwrap_or(48_000),
-                &raw const in_layout.0,
+                &raw const in_layout,
                 in_fmt,
                 i32::try_from(in_rate).unwrap_or(48_000),
                 0,
                 std::ptr::null_mut(),
             )
         };
+        // SAFETY: both layouts are owned here and no longer needed.
+        unsafe {
+            ff::ffi::av_channel_layout_uninit(&raw mut in_layout);
+            ff::ffi::av_channel_layout_uninit(&raw mut out_layout);
+        }
+        let key = (frame.format(), channels, in_rate);
         if ret < 0 || ctx.is_null() {
             return Err(format!("swr_alloc_set_opts2 failed ({ret})"));
         }
-        let me = Self {
-            key: (in_format, in_layout.channels(), in_rate),
-            ctx,
-        };
+        let me = Self { key, ctx };
         // SAFETY: `me.ctx` is a freshly allocated, configured SwrContext.
         let ret = unsafe { ff::ffi::swr_init(me.ctx) };
         if ret < 0 {
@@ -252,17 +280,17 @@ impl FfmpegAudio {
                 None => Ok(Vec::new()),
             };
         }
-        normalize_layout(&mut self.decoded, self.decoder.channels());
         let f = &self.decoded;
-        let key = (f.format(), f.channel_layout().channels(), f.rate());
+        // SAFETY: reading a plain field of the frame's valid AVFrame.
+        #[allow(unsafe_code)]
+        let channels = unsafe { (*f.as_ptr()).ch_layout.nb_channels };
+        let key = (
+            f.format(),
+            if channels > 0 { channels } else { 2 },
+            f.rate(),
+        );
         if self.resampler.as_ref().is_none_or(|r| r.key != key) {
-            let r = Resampler::new(
-                f.format(),
-                &f.channel_layout(),
-                f.rate(),
-                self.out.sample_rate,
-            )
-            .map_err(|e| err(&self.path, e))?;
+            let r = Resampler::new(f, self.out.sample_rate).map_err(|e| err(&self.path, e))?;
             self.resampler = Some(r);
         }
         match self.resampler.as_mut() {
@@ -271,25 +299,6 @@ impl FfmpegAudio {
                 .map_err(|e| err(&self.path, e)),
             None => Ok(Vec::new()),
         }
-    }
-}
-
-/// Gives frames with an unspecified channel order (e.g. PCM in Matroska) the
-/// default layout for their channel count. libswresample normalises such
-/// layouts internally and would otherwise reject every frame as changed.
-#[allow(unsafe_code)]
-fn normalize_layout(frame: &mut ff::frame::Audio, decoder_channels: u16) {
-    // SAFETY: `as_ptr` points to the frame's valid AVFrame for the duration
-    // of the read; `ch_layout.order` is a plain enum field.
-    let unspecified = unsafe {
-        (*frame.as_ptr()).ch_layout.order == ff::ffi::AVChannelOrder::AV_CHANNEL_ORDER_UNSPEC
-    };
-    if unspecified {
-        let n = match frame.channel_layout().channels() {
-            0 => i32::from(decoder_channels),
-            n => n,
-        };
-        frame.set_channel_layout(ff::ChannelLayout::default(n));
     }
 }
 
