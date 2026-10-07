@@ -3055,6 +3055,7 @@ dependencies = [
  "om-media-ffmpeg",
  "om-ndi",
  "om-spout",
+ "om-syphon",
 ]
 
 [[package]]
@@ -3106,6 +3107,15 @@ dependencies = [
  "om-media-core",
  "om-project",
  "windows",
+]
+
+[[package]]
+name = "om-syphon"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "om-media-core",
+ "om-project",
 ]
 
 [[package]]

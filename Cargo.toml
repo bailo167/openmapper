@@ -20,6 +20,7 @@ members = [
     "crates/om-engine",
     "crates/om-spout",
     "crates/om-ndi",
+    "crates/om-syphon",
     "crates/om-platform",
     "crates/om-ui-egui",
     "apps/openmapper",
@@ -50,6 +51,7 @@ om-media-ffmpeg = { path = "crates/om-media-ffmpeg" }
 om-platform = { path = "crates/om-platform" }
 om-spout = { path = "crates/om-spout" }
 om-ndi = { path = "crates/om-ndi" }
+om-syphon = { path = "crates/om-syphon" }
 om-audio = { path = "crates/om-audio" }
 om-isf = { path = "crates/om-isf" }
 om-show = { path = "crates/om-show" }
@@ -102,6 +104,8 @@ windows = { version = "0.62.2", features = [
 ] }
 # NDI: the user's installed runtime is loaded at run time, never bundled.
 libloading = "0.8.9"
+# Builds the vendored Syphon sources (macOS).
+cc = "1.6.0"
 rosc = "0.11.4"
 tiny_http = "0.12.0"
 mdns-sd = "0.21.5"

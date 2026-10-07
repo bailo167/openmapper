@@ -1,0 +1,25 @@
+[package]
+name = "om-syphon"
+description = "OpenMapper Syphon adapter (macOS): send and receive Syphon servers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+[dependencies]
+om-media-core.workspace = true
+om-project.workspace = true
+
+[build-dependencies]
+cc.workspace = true
+
+[[test]]
+name = "syphon"
+# Syphon discovery uses distributed notifications, which are delivered on
+# the main thread's run loop: the test binary runs that loop itself.
+harness = false
+
+[lints]
+workspace = true

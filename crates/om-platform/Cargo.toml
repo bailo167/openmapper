@@ -15,5 +15,8 @@ om-ndi.workspace = true
 [target.'cfg(windows)'.dependencies]
 om-spout.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+om-syphon.workspace = true
+
 [lints]
 workspace = true
