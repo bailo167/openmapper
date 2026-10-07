@@ -1,0 +1,25 @@
+[package]
+name = "om-media-ffmpeg"
+description = "OpenMapper FFmpeg adapter (dynamically linked, LGPL-compatible use)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# Test-corpus encoder (frame-index videos). Used by tests and tools/fixturegen.
+fixtures = []
+
+[dependencies]
+om-time.workspace = true
+om-media-core.workspace = true
+ffmpeg-next.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+om-media-ffmpeg = { path = ".", features = ["fixtures"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true

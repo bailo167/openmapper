@@ -85,3 +85,24 @@ Output windows display the presented canvas texture scaled to the window.
 Pixel-exact per-output rendering (output regions, crops, soft-edge) is part of
 the Advanced mapping milestone; set the canvas to the projector's native size
 ("Match canvas") for 1:1 output now.
+
+## D-012 — Frame timing from containers, snapped to the frame grid (2026-10-07)
+
+Frame times come from container timestamps (exact rationals), never from a
+counter. Containers with coarse time bases (Matroska: milliseconds) shift
+fractional-rate frames by up to 0.5 ms, enough to select the previous frame at
+an exact boundary; timestamps within a quarter frame of the stream's nominal
+grid are snapped to it. `FrameCursor` seeks to at-or-before the target and
+decodes forward; if a demuxer lands late (MP4 indexes by decode time, which
+B-frames put ahead of presentation time) it backs off 1 s, 2 s, 4 s and
+retries. Playback decodes ahead on a thread into a bounded queue (default 6
+frames); the render side never blocks and holds the last frame on a miss.
+
+## D-013 — FFmpeg bindings: ffmpeg-next 9 (2026-10-07)
+
+`ffmpeg-next`/`ffmpeg-sys-next` 9.0 support FFmpeg 9 (the MIT `rsmpeg`
+targets 8.0). They are WTFPL, a permissive licence; added to the cargo-deny
+allow-list. Linking is dynamic via pkg-config (`FFMPEG_DIR` on Windows). CI
+uses distro FFmpeg on Linux, Homebrew on macOS and BtbN's LGPL shared build on
+Windows. Homebrew's FFmpeg is a GPL build — acceptable for development only;
+`om_media_ffmpeg::info().licence` reports it and the release audit rejects it.

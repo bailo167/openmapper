@@ -6,9 +6,19 @@
 //! straight (non-premultiplied) alpha, row-major, top row first; the renderer
 //! converts to linear premultiplied on upload.
 
+mod player;
+mod sequence;
+mod source;
+
 use std::path::Path;
 
 use om_project::PatternKind;
+
+pub use player::{DEFAULT_QUEUE, PlayerStats, VideoPlayer};
+pub use sequence::ImageSequence;
+pub use source::{
+    AudioBlock, AudioFormat, CursorStats, FrameCursor, MediaDescriptor, MediaSource, VideoFrame,
+};
 
 /// Largest accepted image dimension (matches the canvas limit).
 pub const MAX_IMAGE_DIMENSION: u32 = 16384;
@@ -28,6 +38,14 @@ pub enum MediaError {
     },
     #[error("image dimensions must be non-zero")]
     Empty,
+    #[error("{path}: {message}")]
+    Open { path: String, message: String },
+    #[error("decode error: {0}")]
+    Stream(String),
+    #[error("seek to {0} failed: {1}")]
+    Seek(String, String),
+    #[error("{0} has no video stream")]
+    NoVideo(String),
 }
 
 /// A decoded still image.

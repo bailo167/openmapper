@@ -163,6 +163,43 @@ impl RationalTime {
         )
     }
 
+    /// Multiplies by an exact rational speed.
+    pub fn checked_mul_speed(self, speed: Speed) -> Result<Self, TimeError> {
+        let ticks = self
+            .ticks
+            .checked_mul(i128::from(speed.num))
+            .ok_or(TimeError::Overflow)?;
+        let tps = self
+            .ticks_per_second
+            .checked_mul(i128::from(speed.den))
+            .ok_or(TimeError::Overflow)?;
+        Self::new(ticks, tps)
+    }
+
+    /// Euclidean remainder: the result is in `[0, modulus)`. Used for looping.
+    pub fn rem_euclid(self, modulus: Self) -> Result<Self, TimeError> {
+        if modulus.ticks <= 0 {
+            return Err(TimeError::NonPositiveDenominator(modulus.ticks));
+        }
+        let (a, m, den) = self.common(modulus)?;
+        Self::new(a.rem_euclid(m), den)
+    }
+
+    /// Absolute value.
+    pub fn checked_abs(self) -> Result<Self, TimeError> {
+        Ok(Self {
+            ticks: self.ticks.checked_abs().ok_or(TimeError::Overflow)?,
+            ticks_per_second: self.ticks_per_second,
+        })
+    }
+
+    /// From a count of nanoseconds (exact).
+    #[must_use]
+    pub fn from_nanos(nanos: u128) -> Self {
+        let ticks = i128::try_from(nanos).unwrap_or(i128::MAX);
+        Self::new(ticks, 1_000_000_000).unwrap_or(Self::ZERO)
+    }
+
     /// Exact comparison. Fails only if cross-multiplication overflows.
     pub fn checked_cmp(self, rhs: Self) -> Result<Ordering, TimeError> {
         let (a, b, _) = self.common(rhs)?;
@@ -249,6 +286,98 @@ impl<'de> Deserialize<'de> for I128Str {
         s.parse::<i128>()
             .map(Self)
             .map_err(|_| serde::de::Error::custom(TimeError::Parse(s)))
+    }
+}
+
+/// Playback speed as an exact ratio (`-1/1` is reverse, `1/2` half speed).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "SpeedRepr", into = "SpeedRepr")]
+pub struct Speed {
+    num: i32,
+    den: i32,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SpeedRepr {
+    num: i32,
+    den: i32,
+}
+
+impl TryFrom<SpeedRepr> for Speed {
+    type Error = TimeError;
+    fn try_from(r: SpeedRepr) -> Result<Self, Self::Error> {
+        Self::new(r.num, r.den)
+    }
+}
+
+impl From<Speed> for SpeedRepr {
+    fn from(s: Speed) -> Self {
+        Self {
+            num: s.num,
+            den: s.den,
+        }
+    }
+}
+
+impl Speed {
+    pub const NORMAL: Self = Self { num: 1, den: 1 };
+    pub const STOPPED: Self = Self { num: 0, den: 1 };
+    /// Largest supported magnitude.
+    pub const MAX_MAGNITUDE: i32 = 16;
+
+    pub fn new(num: i32, den: i32) -> Result<Self, TimeError> {
+        if den <= 0 || num.unsigned_abs() > Self::MAX_MAGNITUDE.unsigned_abs() * den.unsigned_abs()
+        {
+            return Err(TimeError::InvalidRate {
+                num: i64::from(num),
+                den: i64::from(den),
+            });
+        }
+        let g = i32::try_from(gcd(i128::from(num), i128::from(den)))
+            .unwrap_or(1)
+            .max(1);
+        Ok(Self {
+            num: num / g,
+            den: den / g,
+        })
+    }
+
+    /// Nearest speed with denominator 100 (for UI percent controls).
+    pub fn from_percent(percent: i32) -> Result<Self, TimeError> {
+        Self::new(percent, 100)
+    }
+
+    #[must_use]
+    pub const fn num(self) -> i32 {
+        self.num
+    }
+
+    #[must_use]
+    pub const fn den(self) -> i32 {
+        self.den
+    }
+
+    #[must_use]
+    pub const fn is_reverse(self) -> bool {
+        self.num < 0
+    }
+
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
+    pub fn as_f64(self) -> f64 {
+        f64::from(self.num) / f64::from(self.den)
+    }
+}
+
+impl Default for Speed {
+    fn default() -> Self {
+        Self::NORMAL
+    }
+}
+
+impl fmt::Debug for Speed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}/{}x", self.num, self.den)
     }
 }
 
@@ -422,6 +551,36 @@ mod tests {
         let odd = RationalTime::new(1, i128::MAX).unwrap();
         let odd2 = RationalTime::new(1, i128::MAX - 1).unwrap();
         assert_eq!(odd.checked_add(odd2), Err(TimeError::Overflow));
+    }
+
+    #[test]
+    fn looping_and_speed_are_exact() {
+        let d = RationalTime::from_frame(100, Rate::FPS_29_97).unwrap();
+        let t = d
+            .checked_mul_int(7)
+            .unwrap()
+            .checked_add(RationalTime::new(1, 3).unwrap())
+            .unwrap();
+        assert_eq!(t.rem_euclid(d).unwrap(), RationalTime::new(1, 3).unwrap());
+        let neg = RationalTime::new(-1, 3).unwrap();
+        assert_eq!(
+            neg.rem_euclid(d).unwrap(),
+            d.checked_sub(RationalTime::new(1, 3).unwrap()).unwrap()
+        );
+        let half = Speed::new(1, 2).unwrap();
+        assert_eq!(
+            RationalTime::from_seconds(3)
+                .checked_mul_speed(half)
+                .unwrap(),
+            RationalTime::new(3, 2).unwrap()
+        );
+        assert!(Speed::new(17, 1).is_err());
+        assert!(Speed::new(1, 0).is_err());
+        assert_eq!(Speed::from_percent(50).unwrap(), half);
+        assert_eq!(
+            RationalTime::from_nanos(1_500_000_000),
+            RationalTime::new(3, 2).unwrap()
+        );
     }
 
     proptest! {
