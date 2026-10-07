@@ -64,7 +64,17 @@
   "outputs": [],
   "show": {
     "cues": [],
-    "timelines": []
+    "timelines": [],
+    "modulators": []
+  },
+  "master": {
+    "opacity": 1.0,
+    "blackout": false
+  },
+  "controls": {
+    "osc_port": 8010,
+    "oscquery_port": 8011,
+    "midi": []
   },
   "extensions": {
     "org.example.future": {

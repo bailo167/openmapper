@@ -9,14 +9,21 @@
 //! This crate defines *data* only. Mutations go through `om-command`.
 
 mod migrate;
+pub mod param;
 mod schema;
+pub mod show;
 pub mod store;
 
 pub use migrate::{CURRENT_VERSION, FORMAT};
+pub use param::{ParamId, ParamKind, ParamValue};
 pub use schema::{
     BlendMode, Canvas, DisplayTarget, Effect, EffectKind, Extensions, MAX_BLUR_RADIUS, MAX_EFFECTS,
     MAX_MASK_POINTS, MAX_MESH_DIVISIONS, Mask, MaskPoint, Media, MediaSource, Output, PatternKind,
-    Playback, Project, ShaderValue, Shape, Show, Surface, Timebase, line_quad,
+    Playback, Project, ShaderValue, Shape, Surface, Timebase, line_quad,
+};
+pub use show::{
+    AudioBand, Controls, Cue, CueValue, Ease, Keyframe, LfoShape, Marker, Master, MidiBinding,
+    MidiMessageKind, MidiTarget, ModSource, Modulator, Show, Timeline, Track,
 };
 
 use std::collections::HashSet;
@@ -64,6 +71,8 @@ impl Project {
             surfaces: Vec::new(),
             outputs: Vec::new(),
             show: Show::default(),
+            master: Master::default(),
+            controls: Controls::default(),
             extensions: Extensions::new(),
         }
     }

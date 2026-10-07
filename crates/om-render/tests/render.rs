@@ -801,3 +801,23 @@ fn shader_effect_filters_the_chain() {
         );
     }
 }
+
+#[test]
+fn master_opacity_and_blackout_scale_the_output() {
+    let Some(g) = gpu() else { return };
+    let mut c = Compositor::new(g);
+    let fx_ = Fixture::new((8, 8));
+    let mut pr = project(8, 8, vec![surface(1, Shape::full_quad(), WHITE)]);
+    assert_eq!(fx_.gpu_render(&mut c, &pr)[0], 255);
+    pr.master.opacity = UnitInterval::new(0.5).unwrap();
+    // 50 % linear light is sRGB code 188.
+    assert!(fx_.gpu_render(&mut c, &pr)[0].abs_diff(188) <= 1);
+    pr.master.blackout = true;
+    assert!(
+        fx_.gpu_render(&mut c, &pr)
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|p| p[..3] == [0, 0, 0])
+    );
+}

@@ -7,4 +7,6 @@ mod finite;
 mod id;
 
 pub use finite::{Finite, NonFiniteError, UnitInterval};
-pub use id::{IdParseError, MediaId, OutputId, ProjectId, SurfaceId};
+pub use id::{
+    CueId, IdParseError, MediaId, ModulatorId, OutputId, ProjectId, SurfaceId, TimelineId,
+};

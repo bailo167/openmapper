@@ -104,6 +104,21 @@ define_id!(
     OutputId,
     "output"
 );
+define_id!(
+    /// Identifies a cue.
+    CueId,
+    "cue"
+);
+define_id!(
+    /// Identifies a timeline.
+    TimelineId,
+    "timeline"
+);
+define_id!(
+    /// Identifies a modulator.
+    ModulatorId,
+    "modulator"
+);
 
 #[cfg(test)]
 mod tests {

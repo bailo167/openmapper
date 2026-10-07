@@ -7,6 +7,8 @@
 use std::collections::BTreeMap;
 
 use om_geom::Point2;
+
+use crate::show::{Controls, Master, Show};
 use om_time::{DEFAULT_TICKS_PER_SECOND, I128Str, Rate, Speed};
 use om_types::{Finite, MediaId, OutputId, ProjectId, SurfaceId, UnitInterval};
 use serde::{Deserialize, Serialize};
@@ -40,6 +42,10 @@ pub struct Project {
     pub outputs: Vec<Output>,
     #[serde(default)]
     pub show: Show,
+    #[serde(default)]
+    pub master: Master,
+    #[serde(default)]
+    pub controls: Controls,
     #[serde(default)]
     pub extensions: Extensions,
 }
@@ -768,17 +774,6 @@ pub struct Output {
 pub struct DisplayTarget {
     pub name: String,
     pub index: u32,
-}
-
-/// Show-control state. Cues and timelines arrive with the show milestone;
-/// until then they are kept as opaque JSON so nothing is lost.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Show {
-    #[serde(default)]
-    pub cues: Vec<serde_json::Value>,
-    #[serde(default)]
-    pub timelines: Vec<serde_json::Value>,
 }
 
 fn default_true() -> bool {

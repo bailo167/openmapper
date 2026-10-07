@@ -1,0 +1,18 @@
+[package]
+name = "om-osc"
+description = "OpenMapper OSC: UDP server and the /openmapper address space"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+om-types.workspace = true
+om-project.workspace = true
+om-show.workspace = true
+rosc.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

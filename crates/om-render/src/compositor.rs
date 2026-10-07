@@ -169,6 +169,8 @@ pub struct Compositor {
     shader_media_tmp: HashMap<MediaId, IsfTemps>,
     /// Uniform bound to effect passes that need none.
     dummy_fx: (wgpu::Buffer, wgpu::BindGroup),
+    /// Master gain for presentation (opacity, 0 for blackout).
+    master_uniform: (wgpu::Buffer, wgpu::BindGroup),
 }
 
 impl std::fmt::Debug for Compositor {
@@ -355,6 +357,26 @@ impl Compositor {
             }],
         });
         let dummy_fx = (dummy_buffer, dummy_bind);
+        let master_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("om master"),
+            size: FX_UNIFORM_SIZE,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let master_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("om master"),
+            layout: &fx_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: master_buffer.as_entire_binding(),
+            }],
+        });
+        gpu.queue().write_buffer(
+            &master_buffer,
+            0,
+            bytemuck::cast_slice(&[1.0f32, 0.0, 0.0, 0.0]),
+        );
+        let master_uniform = (master_buffer, master_bind);
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("om composite"),
             bind_group_layouts: &[Some(&item_layout), Some(&media_layout), Some(&mask_layout)],
@@ -408,7 +430,7 @@ impl Compositor {
         let blit_module = device.create_shader_module(wgpu::include_wgsl!("blit.wgsl"));
         let blit_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("om blit"),
-            bind_group_layouts: &[Some(&blit_layout)],
+            bind_group_layouts: &[Some(&blit_layout), Some(&fx_layout)],
             immediate_size: 0,
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -450,6 +472,7 @@ impl Compositor {
             shader_errors: HashMap::new(),
             shader_media_tmp: HashMap::new(),
             dummy_fx,
+            master_uniform,
         }
     }
 
@@ -568,6 +591,17 @@ impl Compositor {
             });
         }
         self.ensure_canvas(size);
+        #[allow(clippy::cast_possible_truncation)]
+        let gain = if project.master.blackout {
+            0.0f32
+        } else {
+            project.master.opacity.get() as f32
+        };
+        self.gpu.queue().write_buffer(
+            &self.master_uniform.0,
+            0,
+            bytemuck::cast_slice(&[gain, 0.0, 0.0, 0.0]),
+        );
         let mut shader_encoder =
             self.gpu
                 .device()
@@ -742,6 +776,7 @@ impl Compositor {
         });
         pass.set_pipeline(&pipeline);
         pass.set_bind_group(0, &bind, &[]);
+        pass.set_bind_group(1, &self.master_uniform.1, &[]);
         pass.draw(0..3, 0..1);
         Ok(())
     }

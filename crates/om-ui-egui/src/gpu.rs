@@ -156,6 +156,14 @@ impl Viewer {
         }
     }
 
+    /// Audio analysis of what is playing (zeros without an audio device).
+    pub fn audio_levels(&self) -> om_audio::analysis::Levels {
+        self.mixer
+            .as_ref()
+            .map(om_audio::Mixer::levels)
+            .unwrap_or_default()
+    }
+
     /// Shader compile/pipeline error for a stored shader path.
     pub fn shader_error(&self, path: &str) -> Option<String> {
         self.media

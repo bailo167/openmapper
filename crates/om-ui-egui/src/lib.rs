@@ -5,6 +5,7 @@
 
 mod canvas;
 mod gpu;
+mod show_ui;
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -44,6 +45,11 @@ pub struct OpenMapperApp {
     drag: Option<Drag>,
     /// Canvas handles edit the selected surface's mask instead of its shape.
     mask_mode: bool,
+    /// Show runtime, control servers, MIDI.
+    live: om_engine::live::Live,
+    /// The project as rendered this frame (document + show overrides).
+    effective: Option<om_project::Project>,
+    show_tab: show_ui::ShowTab,
     displays: Vec<Display>,
     display_error: Option<String>,
     last_poll: Option<Instant>,
@@ -90,6 +96,9 @@ impl OpenMapperApp {
             end_coalescing: false,
             transport: Transport::default(),
             mask_mode: false,
+            live: om_engine::live::Live::new(),
+            effective: None,
+            show_tab: show_ui::ShowTab::Cues,
         };
         if app.viewer.is_none() {
             app.error("No GPU renderer available; the canvas cannot be shown.");
@@ -273,6 +282,8 @@ impl OpenMapperApp {
                 self.transport.seek(RationalTime::ZERO, now);
             }
             ui.monospace(clock(self.transport.time(now)));
+            ui.separator();
+            self.master_controls(ui);
         });
     }
 
@@ -1108,12 +1119,15 @@ impl OpenMapperApp {
     fn canvas_view(&mut self, ui: &mut egui::Ui) {
         let project_dir = self.session.project_dir().map(PathBuf::from);
         let texture = match &mut self.viewer {
-            Some(v) => v.update(
-                self.session.project(),
-                project_dir.as_deref(),
-                self.transport.time(Instant::now()),
-                &self.transport,
-            ),
+            Some(v) => {
+                let effective = self.effective.as_ref().unwrap_or(self.session.project());
+                v.update(
+                    effective,
+                    project_dir.as_deref(),
+                    self.transport.time(Instant::now()),
+                    &self.transport,
+                )
+            }
             None => None,
         };
         let canvas = self.session.project().canvas;
@@ -1614,9 +1628,28 @@ impl eframe::App for OpenMapperApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.poll();
+        // Live show: external control, cues, timelines, modulators.
+        let now = Instant::now();
+        if let Some(v) = &self.viewer {
+            let l = v.audio_levels();
+            self.live.audio = om_show::AudioLevels {
+                level: l.level,
+                low: l.low,
+                mid: l.mid,
+                high: l.high,
+            };
+        }
+        self.effective = Some(self.live.frame(&mut self.session, &mut self.transport, now));
+        if self.live.animating(self.session.project()) {
+            ctx.request_repaint();
+        }
         self.handle_shortcuts(&ctx);
         egui::Panel::top("menu").show(ui, |ui| self.top_bar(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
+        egui::Panel::bottom("show")
+            .resizable(true)
+            .default_size(220.0)
+            .show(ui, |ui| self.show_panel(ui));
         egui::Panel::left("project")
             .default_size(260.0)
             .show(ui, |ui| self.left_panel(ui));

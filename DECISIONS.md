@@ -160,3 +160,17 @@ state (persistent buffers, frame index). Shader files are watched and
 recompiled live. The CPU reference treats ISF as identity; ISF is verified
 against analytic expectations instead. `om-effects` remains unused: effects
 live in `om-render` alongside the compositor (no separate crate needed yet).
+
+## D-019 — Live control model (2026-10-07)
+
+Parameters have stable string ids that double as OSC addresses
+(`/openmapper/<param>`). Direct control (UI/OSC/MIDI) edits the document via
+commands coalesced per parameter; cues, timelines and modulators produce
+per-frame overrides applied to a derived copy for rendering, so shows never
+pollute undo history or the saved file. Precedence: timelines < cues <
+modulators. The show runtime runs on its own always-running live clock; the
+transport governs media only. Cues track (values persist until changed or
+released). OSCQuery is served with tiny_http and advertised via mdns-sd;
+LISTEN/WebSocket streaming is deferred. Audio-reactive levels come from the
+playback mix (no microphone permission needed); a live input source can be
+added later.

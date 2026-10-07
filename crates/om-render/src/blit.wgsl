@@ -8,6 +8,12 @@ override encode_srgb: bool = false;
 @group(0) @binding(0) var canvas: texture_2d<f32>;
 @group(0) @binding(1) var canvas_sampler: sampler;
 
+// Master output level (x): opacity, or 0 for blackout.
+struct Master {
+    gain: vec4<f32>,
+};
+@group(1) @binding(0) var<uniform> master: Master;
+
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -34,7 +40,7 @@ fn to_srgb(c: vec3<f32>) -> vec3<f32> {
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let c = textureSampleLevel(canvas, canvas_sampler, in.uv, 0.0);
     // Premultiplied over opaque black is just the premultiplied colour.
-    var rgb = clamp(c.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+    var rgb = clamp(c.rgb * master.gain.x, vec3<f32>(0.0), vec3<f32>(1.0));
     if encode_srgb {
         rgb = to_srgb(rgb);
     }

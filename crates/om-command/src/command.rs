@@ -106,6 +106,33 @@ pub enum Command {
         id: OutputId,
         display: Option<DisplayTarget>,
     },
+    SetMaster {
+        master: om_project::Master,
+    },
+    SetControls {
+        controls: om_project::Controls,
+    },
+    /// Inserts a cue, or replaces the cue with the same id (keeping its place).
+    PutCue {
+        cue: om_project::Cue,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        index: Option<usize>,
+    },
+    RemoveCue {
+        id: om_types::CueId,
+    },
+    PutTimeline {
+        timeline: om_project::Timeline,
+    },
+    RemoveTimeline {
+        id: om_types::TimelineId,
+    },
+    PutModulator {
+        modulator: om_project::Modulator,
+    },
+    RemoveModulator {
+        id: om_types::ModulatorId,
+    },
     /// Sets (`Some`) or removes (`None`) a project-level extension payload.
     SetExtension {
         key: String,
@@ -129,6 +156,9 @@ pub enum Event {
     OutputAdded { id: OutputId },
     OutputRemoved { id: OutputId },
     OutputChanged { id: OutputId },
+    MasterChanged,
+    ControlsChanged,
+    ShowChanged,
     ExtensionChanged { key: String },
 }
 
@@ -491,6 +521,128 @@ impl Command {
                     events: vec![Event::OutputChanged { id: *id }],
                 })
             }
+            Self::SetMaster { master } => {
+                let old = std::mem::replace(&mut project.master, *master);
+                Ok(Applied {
+                    inverse: Self::SetMaster { master: old },
+                    events: vec![Event::MasterChanged],
+                })
+            }
+            Self::SetControls { controls } => {
+                for b in &controls.midi {
+                    if !(1..=16).contains(&b.channel) || b.number > 127 {
+                        return Err(CommandError::Invalid(format!(
+                            "MIDI binding channel {} / number {} out of range",
+                            b.channel, b.number
+                        )));
+                    }
+                }
+                let old = std::mem::replace(&mut project.controls, controls.clone());
+                Ok(Applied {
+                    inverse: Self::SetControls { controls: old },
+                    events: vec![Event::ControlsChanged],
+                })
+            }
+            Self::PutCue { cue, index } => {
+                check_name(&cue.name)?;
+                if cue.fade.get() < 0.0 {
+                    return Err(CommandError::Invalid("cue fade is negative".into()));
+                }
+                let list = &mut project.show.cues;
+                let inverse = match list.iter().position(|c| c.id == cue.id) {
+                    Some(at) => {
+                        let old = std::mem::replace(&mut list[at], cue.clone());
+                        Self::PutCue {
+                            cue: old,
+                            index: Some(at),
+                        }
+                    }
+                    None => {
+                        insert_at(list, cue.clone(), *index)?;
+                        Self::RemoveCue { id: cue.id }
+                    }
+                };
+                Ok(Applied {
+                    inverse,
+                    events: vec![Event::ShowChanged],
+                })
+            }
+            Self::RemoveCue { id } => {
+                let list = &mut project.show.cues;
+                let at = list
+                    .iter()
+                    .position(|c| c.id == *id)
+                    .ok_or_else(|| CommandError::Invalid(format!("cue {id} does not exist")))?;
+                let cue = list.remove(at);
+                Ok(Applied {
+                    inverse: Self::PutCue {
+                        cue,
+                        index: Some(at),
+                    },
+                    events: vec![Event::ShowChanged],
+                })
+            }
+            Self::PutTimeline { timeline } => {
+                check_name(&timeline.name)?;
+                if timeline.duration.ticks() <= 0 {
+                    return Err(CommandError::Invalid(
+                        "timeline duration must be positive".into(),
+                    ));
+                }
+                let list = &mut project.show.timelines;
+                let inverse = match list.iter().position(|t| t.id == timeline.id) {
+                    Some(at) => Self::PutTimeline {
+                        timeline: std::mem::replace(&mut list[at], timeline.clone()),
+                    },
+                    None => {
+                        list.push(timeline.clone());
+                        Self::RemoveTimeline { id: timeline.id }
+                    }
+                };
+                Ok(Applied {
+                    inverse,
+                    events: vec![Event::ShowChanged],
+                })
+            }
+            Self::RemoveTimeline { id } => {
+                let list = &mut project.show.timelines;
+                let at = list.iter().position(|t| t.id == *id).ok_or_else(|| {
+                    CommandError::Invalid(format!("timeline {id} does not exist"))
+                })?;
+                let timeline = list.remove(at);
+                Ok(Applied {
+                    inverse: Self::PutTimeline { timeline },
+                    events: vec![Event::ShowChanged],
+                })
+            }
+            Self::PutModulator { modulator } => {
+                check_name(&modulator.name)?;
+                let list = &mut project.show.modulators;
+                let inverse = match list.iter().position(|m| m.id == modulator.id) {
+                    Some(at) => Self::PutModulator {
+                        modulator: std::mem::replace(&mut list[at], modulator.clone()),
+                    },
+                    None => {
+                        list.push(modulator.clone());
+                        Self::RemoveModulator { id: modulator.id }
+                    }
+                };
+                Ok(Applied {
+                    inverse,
+                    events: vec![Event::ShowChanged],
+                })
+            }
+            Self::RemoveModulator { id } => {
+                let list = &mut project.show.modulators;
+                let at = list.iter().position(|m| m.id == *id).ok_or_else(|| {
+                    CommandError::Invalid(format!("modulator {id} does not exist"))
+                })?;
+                let modulator = list.remove(at);
+                Ok(Applied {
+                    inverse: Self::PutModulator { modulator },
+                    events: vec![Event::ShowChanged],
+                })
+            }
             Self::SetExtension { key, value } => {
                 if key.is_empty() {
                     return Err(CommandError::EmptyExtensionKey);
@@ -534,6 +686,14 @@ impl Command {
             Self::UpdateOutput { .. } => "Edit Output",
             Self::SetOutputDisplay { .. } => "Assign Display",
             Self::SetExtension { .. } => "Edit Extension",
+            Self::SetMaster { .. } => "Master",
+            Self::SetControls { .. } => "Control Settings",
+            Self::PutCue { .. } => "Edit Cue",
+            Self::RemoveCue { .. } => "Remove Cue",
+            Self::PutTimeline { .. } => "Edit Timeline",
+            Self::RemoveTimeline { .. } => "Remove Timeline",
+            Self::PutModulator { .. } => "Edit Modulator",
+            Self::RemoveModulator { .. } => "Remove Modulator",
         }
     }
 }

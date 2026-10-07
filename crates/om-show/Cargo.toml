@@ -1,0 +1,17 @@
+[package]
+name = "om-show"
+description = "OpenMapper show runtime: cues, timelines and modulators evaluated against the show clock"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+om-types.workspace = true
+om-time.workspace = true
+om-project.workspace = true
+om-command.workspace = true
+
+[lints]
+workspace = true

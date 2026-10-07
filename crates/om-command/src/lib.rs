@@ -11,6 +11,7 @@
 
 mod command;
 mod document;
+pub mod params;
 
 pub use command::{Applied, Command, CommandError, Event};
 pub use document::{CommandResult, Document, HistoryError};

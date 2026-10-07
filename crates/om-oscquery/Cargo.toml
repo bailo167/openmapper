@@ -1,0 +1,19 @@
+[package]
+name = "om-oscquery"
+description = "OpenMapper OSCQuery: HTTP/JSON description of the OSC address space"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+om-project.workspace = true
+om-osc.workspace = true
+tiny_http.workspace = true
+mdns-sd.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

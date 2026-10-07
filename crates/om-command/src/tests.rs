@@ -406,3 +406,126 @@ fn media_in_use_cannot_be_removed() {
     .unwrap();
     d.execute(Command::RemoveMedia { id: m }).unwrap();
 }
+
+mod params_tests {
+    use super::*;
+    use crate::params;
+    use om_project::{ParamId, ParamKind, ParamValue};
+
+    fn show_project() -> Document {
+        let mut d = Document::new(project());
+        d.execute(add(1)).unwrap();
+        d.execute(Command::AddMedia {
+            media: Media {
+                id: MediaId::from_u128(9),
+                name: "clip".into(),
+                source: MediaSource::Video {
+                    path: "a.mp4".into(),
+                },
+                playback: Default::default(),
+                extensions: Default::default(),
+            },
+            index: None,
+        })
+        .unwrap();
+        d
+    }
+
+    #[test]
+    fn every_listed_param_round_trips_through_commands() {
+        let mut d = show_project();
+        let infos = params::list(d.project());
+        assert!(
+            infos
+                .iter()
+                .any(|p| p.id == ParamId::SurfaceOpacity(sid(1)))
+        );
+        assert!(
+            infos
+                .iter()
+                .any(|p| p.id == ParamId::MediaVolume(MediaId::from_u128(9)))
+        );
+        for info in infos {
+            let target = match info.kind {
+                ParamKind::Bool => {
+                    ParamValue::Bool(!params::get(d.project(), &info.id).unwrap().as_bool())
+                }
+                ParamKind::Float { min, max } => {
+                    ParamValue::Float((min.max(-2.0) + max.min(2.0)) / 2.0 + 0.25)
+                }
+            };
+            let cmd = params::set_command(d.project(), &info.id, target).unwrap();
+            d.execute(cmd).unwrap();
+            let got = params::get(d.project(), &info.id).unwrap();
+            let want = target.coerce(info.kind);
+            assert!(
+                (got.as_f64() - want.as_f64()).abs() < 1e-3,
+                "{}: {got:?} vs {want:?}",
+                info.id
+            );
+        }
+    }
+
+    #[test]
+    fn overrides_touch_only_the_derived_copy() {
+        let d = show_project();
+        let mut copy = d.project().clone();
+        let overrides = std::collections::BTreeMap::from([
+            (ParamId::SurfaceOpacity(sid(1)), ParamValue::Float(0.25)),
+            (ParamId::MasterBlackout, ParamValue::Bool(true)),
+            (ParamId::SurfaceOpacity(sid(99)), ParamValue::Float(0.5)), // gone: ignored
+            (ParamId::MasterOpacity, ParamValue::Float(7.0)),           // clamped
+        ]);
+        params::apply_overrides(&mut copy, &overrides);
+        assert_eq!(copy.surface(sid(1)).unwrap().opacity.get(), 0.25);
+        assert!(copy.master.blackout);
+        assert_eq!(copy.master.opacity.get(), 1.0);
+        assert_eq!(
+            d.project().surface(sid(1)).unwrap().opacity.get(),
+            1.0,
+            "document unchanged"
+        );
+    }
+
+    #[test]
+    fn show_editing_is_undoable() {
+        let mut d = show_project();
+        let cue = om_project::Cue {
+            id: om_types::CueId::from_u128(1),
+            name: "Look 1".into(),
+            fade: om_types::Finite::new(2.0).unwrap(),
+            values: vec![om_project::CueValue {
+                param: ParamId::MasterOpacity,
+                value: ParamValue::Float(0.5),
+            }],
+        };
+        d.execute(Command::PutCue {
+            cue: cue.clone(),
+            index: None,
+        })
+        .unwrap();
+        let mut renamed = cue.clone();
+        renamed.name = "Look 1b".into();
+        d.execute(Command::PutCue {
+            cue: renamed,
+            index: None,
+        })
+        .unwrap();
+        assert_eq!(d.project().show.cues.len(), 1);
+        d.undo().unwrap();
+        assert_eq!(d.project().show.cues[0].name, "Look 1");
+        d.undo().unwrap();
+        assert!(d.project().show.cues.is_empty());
+        let bad = om_project::Cue {
+            fade: om_types::Finite::new(-1.0).unwrap(),
+            ..cue
+        };
+        assert!(
+            d.execute(Command::PutCue {
+                cue: bad,
+                index: None
+            })
+            .is_err()
+        );
+    }
+}

@@ -67,6 +67,9 @@ pub const SAME_LAYER_ALLOWED: &[(&str, &str)] = &[
     ("om-effects", "om-render"),
     ("om-render", "om-isf"),
     ("om-oscquery", "om-osc"),
+    ("om-oscquery", "om-show"),
+    ("om-osc", "om-show"),
+    ("om-midi", "om-show"),
     ("om-timeline", "om-show"),
 ];
 

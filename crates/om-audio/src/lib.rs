@@ -14,6 +14,8 @@
 //! Voices play only at normal speed; other speeds are muted until a
 //! time-stretching resampler exists.
 
+pub mod analysis;
+
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
@@ -83,6 +85,8 @@ struct State {
 pub struct Mixer {
     state: Arc<Mutex<State>>,
     rate: u32,
+    /// Analysis of what is actually played (for audio-reactive control).
+    analyzer: analysis::SharedAnalyzer,
 }
 
 impl Mixer {
@@ -97,7 +101,14 @@ impl Mixer {
                 master_gain: 1.0,
             })),
             rate,
+            analyzer: analysis::SharedAnalyzer::new(rate),
         }
+    }
+
+    /// Levels of the audio being played.
+    #[must_use]
+    pub fn levels(&self) -> analysis::Levels {
+        self.analyzer.levels()
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -162,6 +173,7 @@ impl Mixer {
         for v in &voices {
             render_voice(v, start, out, gain);
         }
+        self.analyzer.process(out);
     }
 
     /// Renders the block starting at show frame `start` (no clock); for

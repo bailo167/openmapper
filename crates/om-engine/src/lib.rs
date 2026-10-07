@@ -6,6 +6,7 @@
 //! through a session so persistence and recovery behave identically
 //! everywhere.
 
+pub mod live;
 mod media;
 
 use std::path::{Path, PathBuf};
