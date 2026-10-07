@@ -12,6 +12,7 @@ anyhow.workspace = true
 cargo_metadata = "0.23.1"
 globset = "0.4.20"
 regex.workspace = true
+sha2 = "0.10.9"
 
 [lints]
 workspace = true

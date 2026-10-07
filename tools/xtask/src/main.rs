@@ -3,6 +3,7 @@
 //! locally and in GitHub Actions.
 
 mod arch;
+mod dist;
 mod provenance;
 
 use std::path::{Path, PathBuf};
@@ -20,7 +21,12 @@ tasks:
   test         run all workspace tests
   deny         cargo-deny licence/advisory/source checks
   provenance   clean-room and licence-header scan of repository files
-  arch         crate layering and forbidden-dependency check";
+               (--history: every blob in every ref)
+  arch         crate layering and forbidden-dependency check
+  notices [OUT] third-party licences of the release binaries
+  dist         release build + archive + SHA256SUMS in target/dist
+  checksums F… SHA-256 lines for files
+  smoke ARCHIVE unpack an archive and exercise the CLI from it";
 
 fn main() -> ExitCode {
     let task = std::env::args().nth(1).unwrap_or_default();
@@ -30,8 +36,27 @@ fn main() -> ExitCode {
         "clippy" => clippy(),
         "test" => test(),
         "deny" => deny(),
+        "provenance" if std::env::args().nth(2).as_deref() == Some("--history") => {
+            provenance::run_history(&root())
+        }
         "provenance" => provenance::run(&root()),
         "arch" => arch::run(&root()),
+        "notices" => {
+            let out = std::env::args().nth(2).map_or_else(
+                || root().join("target/dist/THIRD_PARTY_LICENSES.txt"),
+                PathBuf::from,
+            );
+            dist::notices(&root(), &out)
+        }
+        "dist" => dist::dist(&root()).map(|_| ()),
+        "checksums" => {
+            let files: Vec<PathBuf> = std::env::args().skip(2).map(PathBuf::from).collect();
+            dist::checksum_lines(&files).map(|s| print!("{s}"))
+        }
+        "smoke" => match std::env::args().nth(2) {
+            Some(a) => dist::smoke(Path::new(&a)),
+            None => Err(anyhow::anyhow!("usage: cargo xtask smoke ARCHIVE")),
+        },
         _ => {
             eprintln!("{USAGE}");
             return ExitCode::from(2);

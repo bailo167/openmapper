@@ -106,6 +106,10 @@ enum Action {
         path: PathBuf,
         #[arg(long, default_value_t = 60)]
         seconds: u64,
+        /// Fail if resident memory grows by more than this many MiB after
+        /// the first minute (Linux; reported only elsewhere).
+        #[arg(long, default_value_t = 256)]
+        max_rss_growth_mib: u64,
     },
     /// Live inputs: list what is available, or test one.
     Live {
@@ -313,7 +317,11 @@ fn run(cli: Cli) -> Result<(), String> {
             println!("{}", gpu.capabilities());
             Ok(())
         }
-        Action::Soak { path, seconds } => soak(&path, seconds),
+        Action::Soak {
+            path,
+            seconds,
+            max_rss_growth_mib,
+        } => soak(&path, seconds, max_rss_growth_mib),
         Action::Live { action } => live(action),
         Action::Dmx { action } => dmx(action),
         Action::StructuredLight { action } => structured_light(action),
@@ -901,7 +909,15 @@ fn seconds(s: f64) -> Result<RationalTime, String> {
     RationalTime::new(ms, 1000).map_err(|e| e.to_string())
 }
 
-fn soak(path: &Path, seconds: u64) -> Result<(), String> {
+/// Resident set size in bytes (Linux; `None` elsewhere).
+fn resident_bytes() -> Option<u64> {
+    let status = fs::read_to_string("/proc/self/status").ok()?;
+    let line = status.lines().find(|l| l.starts_with("VmRSS:"))?;
+    let kib: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
+    Some(kib * 1024)
+}
+
+fn soak(path: &Path, seconds: u64, max_rss_growth_mib: u64) -> Result<(), String> {
     let (project, mut compositor, mut media) = prepare(path)?;
     println!("gpu: {}", compositor.gpu().capabilities());
     let deadline = Instant::now() + Duration::from_secs(seconds);
@@ -909,6 +925,9 @@ fn soak(path: &Path, seconds: u64) -> Result<(), String> {
     let mut baseline = None;
     let mut next_report = Instant::now() + Duration::from_secs(10);
     let start = Instant::now();
+    // Resident memory after a minute of warm-up (caches filled).
+    let mut rss_baseline: Option<u64> = None;
+    let mut rss_peak = 0u64;
     while Instant::now() < deadline {
         let t = RationalTime::from_nanos(start.elapsed().as_nanos());
         let inputs = load_media(
@@ -939,16 +958,43 @@ fn soak(path: &Path, seconds: u64) -> Result<(), String> {
             }
         }
         if Instant::now() >= next_report {
+            let rss = resident_bytes();
+            if let Some(r) = rss {
+                rss_peak = rss_peak.max(r);
+                if rss_baseline.is_none() && start.elapsed() >= Duration::from_secs(60) {
+                    rss_baseline = Some(r);
+                }
+                if let Some(b) = rss_baseline
+                    && r.saturating_sub(b) > max_rss_growth_mib << 20
+                {
+                    return Err(format!(
+                        "resident memory grew from {} MiB to {} MiB",
+                        b >> 20,
+                        r >> 20
+                    ));
+                }
+            }
             println!(
-                "{:>6.0}s  {frames} frames  {:.1} fps  {:?}",
+                "{:>6.0}s  {frames} frames  {:.1} fps  {:?}  rss {}",
                 start.elapsed().as_secs_f64(),
                 frames as f64 / start.elapsed().as_secs_f64(),
-                compositor.resource_counts()
+                compositor.resource_counts(),
+                rss.map_or_else(|| "n/a".to_owned(), |r| format!("{} MiB", r >> 20))
             );
             next_report += Duration::from_secs(10);
         }
     }
-    println!("ok: {frames} frames in {seconds}s with stable GPU resources");
+    println!(
+        "ok: {frames} frames in {seconds}s with stable GPU resources{}",
+        match rss_baseline {
+            Some(b) => format!(
+                "; resident memory {} MiB after warm-up, peak {} MiB",
+                b >> 20,
+                rss_peak >> 20
+            ),
+            None => String::new(),
+        }
+    );
     Ok(())
 }
 

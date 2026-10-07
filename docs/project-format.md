@@ -143,6 +143,22 @@ order (docs/plugins.md): `{ "path": "plugins/invert.wasm", "enabled":
 true, "params": { "amount": 1.0 } }`. At most 8 per media item; paths
 follow the media path rules.
 
+## External control
+
+`controls` (all optional): `osc_port` (default 8010, 0 = off),
+`oscquery_port` (8011, 0 = off), `network` (default false: listen on this
+computer only; true: all interfaces and mDNS), `midi` (bindings), and
+`dmx_input` (omitted when unused): `{ "enabled": false, "bindings": [ {
+"universe": 1, "channel": 10, "fine": true, "target": { "kind": "param",
+"param": "master/opacity" } } ] }`. Channels are 1–512 (1–511 for 16-bit
+`fine` pairs); at most 4096 MIDI and 4096 DMX bindings (docs/control.md).
+
+Opening a file never starts its camera, network, DMX or remote-control
+connections by itself: the application asks first (DECISIONS.md D-029).
+Size limits when reading: the project file 64 MiB; files it names are read
+only if they are regular files (shaders 256 KiB, plugins 16 MiB, OBJ
+models 512 MiB).
+
 ## Recovery
 
 Normal save:

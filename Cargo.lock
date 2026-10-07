@@ -6052,6 +6052,7 @@ dependencies = [
  "cargo_metadata",
  "globset",
  "regex",
+ "sha2",
 ]
 
 [[package]]

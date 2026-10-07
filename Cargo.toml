@@ -141,3 +141,9 @@ debug = false
 
 [profile.release]
 debug = "line-tables-only"
+
+# Distributed binaries (`cargo xtask dist`): release, without debug info.
+[profile.distribution]
+inherits = "release"
+debug = false
+strip = true

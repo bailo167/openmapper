@@ -363,3 +363,20 @@ changed these defaults and limits:
   messages with per-frame coalescing (bounding journal growth), and OSC
   fades/seeks to finite, capped values. The naga GLSL frontend runs under
   `catch_unwind`.
+
+## D-030 — Release packaging and the 1.0 verdict (2026-10-07)
+
+Releases are portable `.tar.gz` archives per platform (binaries, LICENSE,
+NOTICE, THIRD_PARTY.yml, a generated THIRD_PARTY_LICENSES.txt, the user
+guide and reference docs) with `SHA256SUMS`, built by `cargo xtask dist`
+and smoke-tested from a fresh directory by `cargo xtask smoke` on all three
+OSes in CI (on demand). Installers (`.app`/`.dmg`, MSI) wait for signing
+accounts. Third-party notices are generated from the dependency graph of
+the shipped binaries rather than maintained by hand, with standard licence
+texts and author lines for crates that publish no licence file. The
+clean-room scan also runs over every blob in every ref
+(`provenance --history`), with reviewed false positives listed in code.
+FFmpeg is not bundled; whether to bundle an LGPL build or load FFmpeg at
+run time is a release decision (RELEASE_GAPS.md G-07). The 1.0 verdict is
+NOT READY until the hardware, soak, distribution, signing and legal items
+in RELEASE_GAPS.md are closed.
