@@ -455,6 +455,8 @@ pub struct SpoutSender {
     frames: Option<Handle>,
     texture: Option<SendTexture>,
     registration: Option<Registration>,
+    /// Description of a new texture not yet published to receivers.
+    unannounced: Option<TextureInfo>,
     scratch: Vec<u8>,
 }
 
@@ -490,6 +492,7 @@ impl SpoutSender {
             frames: frame_counter(name),
             texture: None,
             registration: None,
+            unannounced: None,
             scratch: Vec::new(),
         })
     }
@@ -527,10 +530,9 @@ impl SpoutSender {
             description: exe_path(),
             partner_id: 0,
         };
-        match &self.registration {
-            Some(r) => r.update(&info),
-            None => self.registration = Some(Registration::new(&self.name, &info)?),
-        }
+        // Announced only once it holds a frame (see `send`), so receivers
+        // never copy an unwritten texture.
+        self.unannounced = Some(info);
         self.texture = Some(SendTexture {
             texture,
             width,
@@ -568,6 +570,12 @@ impl FrameSink for SpoutSender {
         }
         self.device.finish()?;
         drop(_guard);
+        if let Some(info) = self.unannounced.take() {
+            match &self.registration {
+                Some(r) => r.update(&info),
+                None => self.registration = Some(Registration::new(&self.name, &info)?),
+            }
+        }
         if let Some(sem) = &self.frames {
             // Net +1: take one, give two (the Spout frame-count protocol).
             // SAFETY: `sem` is a valid semaphore handle.

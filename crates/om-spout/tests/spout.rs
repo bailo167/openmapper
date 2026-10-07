@@ -75,7 +75,8 @@ fn wait_until(what: &str, timeout: Duration, mut f: impl FnMut() -> bool) {
 /// exactly; returns the number matched.
 fn exchange(tx: &PublishFeed, rx: &LiveFeed, w: u32, h: u32, count: u32) -> u32 {
     let mut sent: HashMap<Vec<u8>, u32> = HashMap::new();
-    let mut seen = 0;
+    // The receiver holds the last frame of an earlier sender; start after it.
+    let mut seen = rx.newer_than(0).map_or(0, |f| f.seq);
     let mut matched = 0;
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut i = 0;
@@ -87,7 +88,9 @@ fn exchange(tx: &PublishFeed, rx: &LiveFeed, w: u32, h: u32, count: u32) -> u32 
         std::thread::sleep(Duration::from_millis(16));
         while let Some(f) = rx.newer_than(seen) {
             seen = f.seq;
-            assert_eq!((f.image.width(), f.image.height()), (w, h));
+            if (f.image.width(), f.image.height()) != (w, h) {
+                continue; // a frame from before a resize
+            }
             assert!(
                 sent.contains_key(f.image.rgba8()),
                 "received frame differs from every sent frame"
