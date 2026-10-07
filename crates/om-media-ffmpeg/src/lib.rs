@@ -47,6 +47,16 @@ impl om_media_core::VideoOpener for FfmpegOpener {
 
 use std::sync::OnceLock;
 
+use ffmpeg_next as ff;
+
+/// Opens a local media file allowing only the `file` protocol, so a
+/// playlist-style file cannot make FFmpeg fetch URLs or other local files.
+fn open_file(path: &std::path::Path) -> Result<ff::format::context::Input, ff::Error> {
+    let mut opts = ff::Dictionary::new();
+    opts.set("protocol_whitelist", "file");
+    ff::format::input_with_dictionary(&path, opts)
+}
+
 /// Licence profile of the loaded FFmpeg libraries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LicenceProfile {

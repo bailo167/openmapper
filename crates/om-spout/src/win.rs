@@ -31,8 +31,9 @@ use windows::Win32::Graphics::Direct3D11::{
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::IDXGIResource;
 use windows::Win32::System::Memory::{
-    CreateFileMappingA, FILE_MAP_ALL_ACCESS, MEMORY_BASIC_INFORMATION, MEMORY_MAPPED_VIEW_ADDRESS,
-    MapViewOfFile, OpenFileMappingA, PAGE_READWRITE, UnmapViewOfFile, VirtualQuery,
+    CreateFileMappingA, FILE_MAP_ALL_ACCESS, MEM_COMMIT, MEMORY_BASIC_INFORMATION,
+    MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile, OpenFileMappingA, PAGE_READWRITE, UnmapViewOfFile,
+    VirtualQuery,
 };
 use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueA};
 use windows::Win32::System::Threading::{
@@ -160,7 +161,13 @@ impl SharedMem {
                 size_of::<MEMORY_BASIC_INFORMATION>(),
             )
         };
-        let len = if got == 0 { 0 } else { info.RegionSize };
+        // Another process may have created the block reserved but not
+        // committed: touching it would fault.
+        let len = if got == 0 || info.State != MEM_COMMIT {
+            0
+        } else {
+            info.RegionSize
+        };
         let mem = Self {
             view,
             len,
@@ -173,15 +180,27 @@ impl SharedMem {
         Ok(mem)
     }
 
-    /// Locks the block and runs `f` on its bytes.
+    /// Locks the block and runs `f` on a copy of its bytes, writing back
+    /// what `f` changed. Other processes can write the block at any time
+    /// (the mutex only binds cooperating ones), so it is never borrowed as
+    /// a Rust slice: bytes are copied with volatile reads and writes.
     fn with<R>(&self, f: impl FnOnce(&mut [u8]) -> R) -> Option<R> {
         let _guard = acquire(&self.mutex)?;
-        // SAFETY: the view is `len` bytes of mapped memory, valid for the
-        // lifetime of `self`; the named mutex excludes other cooperating
-        // users for the duration of `f`.
-        let bytes =
-            unsafe { std::slice::from_raw_parts_mut(self.view.Value.cast::<u8>(), self.len) };
-        Some(f(bytes))
+        let base = self.view.Value.cast::<u8>();
+        // SAFETY: the view is `len` bytes of committed mapped memory, valid
+        // for the lifetime of `self`; byte accesses need no alignment.
+        let mut copy: Vec<u8> = (0..self.len)
+            .map(|i| unsafe { base.add(i).read_volatile() })
+            .collect();
+        let before = copy.clone();
+        let r = f(&mut copy);
+        for (i, (new, old)) in copy.iter().zip(&before).enumerate() {
+            if new != old {
+                // SAFETY: as above, `i < len`.
+                unsafe { base.add(i).write_volatile(*new) };
+            }
+        }
+        Some(r)
     }
 }
 
@@ -191,6 +210,9 @@ impl Drop for SharedMem {
         let _ = unsafe { UnmapViewOfFile(self.view) };
     }
 }
+
+/// Largest texture received (8192 × 8192).
+pub const MAX_RECEIVE_PIXELS: u64 = 8192 * 8192;
 
 /// Capacity of the sender-name list configured for this user.
 fn max_senders() -> usize {
@@ -699,6 +721,13 @@ impl SpoutReceiver {
         let mut desc = D3D11_TEXTURE2D_DESC::default();
         // SAFETY: valid out-pointer.
         unsafe { shared.GetDesc(&raw mut desc) };
+        // Sized by another process: refuse what would force huge copies.
+        if u64::from(desc.Width) * u64::from(desc.Height) > MAX_RECEIVE_PIXELS {
+            return Err(win_err(
+                &self.name,
+                format!("texture {}x{} is too large", desc.Width, desc.Height),
+            ));
+        }
         let staging_desc =
             texture_desc(desc.Width, desc.Height, desc.Format.0.cast_unsigned(), true);
         let mut staging = None;

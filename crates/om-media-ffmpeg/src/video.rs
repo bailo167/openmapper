@@ -73,7 +73,7 @@ impl FfmpegVideo {
         if !path.is_file() {
             return Err(MediaError::NotFound { path: shown });
         }
-        let input = ff::format::input(path).map_err(|e| open_err(&shown, e))?;
+        let input = crate::open_file(path).map_err(|e| open_err(&shown, e))?;
         Self::from_input(input, shown, false)
     }
 
@@ -172,7 +172,7 @@ impl FfmpegVideo {
     fn media_time(&self, pts: i64) -> Option<RationalTime> {
         let tb = self.time_base;
         let raw = RationalTime::new(
-            i128::from(pts - self.start_pts) * i128::from(tb.numerator()),
+            (i128::from(pts) - i128::from(self.start_pts)) * i128::from(tb.numerator()),
             i128::from(tb.denominator()),
         )
         .ok()?;

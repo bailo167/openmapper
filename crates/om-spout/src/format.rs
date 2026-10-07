@@ -57,6 +57,18 @@ pub fn validate_name(name: &str) -> Result<(), String> {
     if name.bytes().any(|b| b == 0) {
         return Err("Spout sender name contains a NUL byte".into());
     }
+    // A backslash would address another kernel object namespace
+    // (`Global\…`), and the reserved names are the shared registry blocks
+    // themselves (a sender would overwrite the machine-wide list).
+    if name.contains('\\') {
+        return Err("Spout sender name contains a backslash".into());
+    }
+    if [NAMES_MAP, ACTIVE_MAP]
+        .iter()
+        .any(|r| name.eq_ignore_ascii_case(r))
+    {
+        return Err(format!("{name:?} is reserved by Spout"));
+    }
     Ok(())
 }
 
@@ -345,6 +357,9 @@ mod tests {
         assert!(validate_name(&"a".repeat(255)).is_ok());
         assert!(validate_name(&"a".repeat(256)).is_err());
         assert!(validate_name("a\0b").is_err());
+        assert!(validate_name("Global\\x").is_err(), "no namespaces");
+        assert!(validate_name("SpoutSenderNames").is_err(), "reserved");
+        assert!(validate_name("activesendername").is_err(), "reserved");
         assert_eq!(access_mutex("X"), "X_SpoutAccessMutex");
         assert_eq!(frame_semaphore("X"), "X_Count_Semaphore");
         assert_eq!(map_mutex(NAMES_MAP), "SpoutSenderNames_mutex");

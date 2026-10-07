@@ -45,15 +45,20 @@ pub fn run_main_loop(d: Duration) {
 }
 
 unsafe extern "C" fn collect(ctx: *mut c_void, name: *const c_char, app: *const c_char) {
-    // SAFETY: `ctx` is the `Vec` passed by `servers`, alive for the call;
-    // the strings are NUL-terminated and valid during the callback.
-    unsafe {
-        let out = &mut *ctx.cast::<Vec<(String, String)>>();
-        out.push((
-            CStr::from_ptr(name).to_string_lossy().into_owned(),
-            CStr::from_ptr(app).to_string_lossy().into_owned(),
-        ));
+    let text = |p: *const c_char| {
+        if p.is_null() {
+            String::new()
+        } else {
+            // SAFETY: non-null, NUL-terminated and valid during the callback.
+            unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()
+        }
+    };
+    if ctx.is_null() {
+        return;
     }
+    // SAFETY: `ctx` is the `Vec` passed by `servers`, alive for the call.
+    let out = unsafe { &mut *ctx.cast::<Vec<(String, String)>>() };
+    out.push((text(name), text(app)));
 }
 
 /// Announced Syphon servers as `(server name, application name)`.

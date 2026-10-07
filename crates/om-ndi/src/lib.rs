@@ -12,7 +12,7 @@
 pub mod ffi;
 
 use std::ffi::{CStr, CString};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -37,8 +37,13 @@ const SYSTEM_DIRS: &[&str] = &[
 #[cfg(not(target_os = "macos"))]
 const SYSTEM_DIRS: &[&str] = &[];
 
-/// Where to look for the runtime, most specific first. Bare file names
-/// fall back to the platform's library search path.
+/// Largest received frame (8192 × 8192).
+pub const MAX_RECEIVE_PIXELS: usize = 8192 * 8192;
+
+/// Where to look for the runtime, most specific first. On Linux and macOS
+/// bare file names fall back to the platform's library search path; on
+/// Windows only absolute paths are tried, because the default DLL search
+/// includes the current directory and `PATH` (a planted DLL would run).
 #[must_use]
 pub fn candidates() -> Vec<PathBuf> {
     let mut out = Vec::new();
@@ -57,8 +62,43 @@ pub fn candidates() -> Vec<PathBuf> {
             out.push(PathBuf::from(dir).join(name));
         }
     }
-    out.extend(LIBRARY_NAMES.iter().map(PathBuf::from));
+    if cfg!(windows) {
+        if let Some(pf) = std::env::var_os("ProgramFiles") {
+            for sub in [r"NDI\NDI 6 Runtime\v6", r"NDI\NDI 5 Runtime\v5"] {
+                for name in LIBRARY_NAMES {
+                    out.push(PathBuf::from(&pf).join(sub).join(name));
+                }
+            }
+        }
+        out.retain(|p| p.is_absolute());
+    } else {
+        out.extend(LIBRARY_NAMES.iter().map(PathBuf::from));
+    }
     out
+}
+
+/// Opens a library without searching the current directory or `PATH` for
+/// it or its dependencies (Windows), or with the default loader rules.
+fn open_library(path: &Path) -> Result<Library, libloading::Error> {
+    #[cfg(windows)]
+    {
+        use libloading::os::windows::{
+            LOAD_LIBRARY_SEARCH_DEFAULT_DIRS, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR,
+        };
+        // SAFETY: as for `Library::new`; see `Runtime::load_from`.
+        unsafe {
+            libloading::os::windows::Library::load_with_flags(
+                path,
+                LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS,
+            )
+        }
+        .map(Library::from)
+    }
+    #[cfg(not(windows))]
+    {
+        // SAFETY: see `Runtime::load_from`.
+        unsafe { Library::new(path) }
+    }
 }
 
 /// The loaded runtime's entry points.
@@ -102,10 +142,10 @@ impl Runtime {
     pub fn load_from(paths: &[PathBuf]) -> Result<Self, String> {
         let mut last = None;
         for path in paths {
-            // SAFETY: loading a library runs its initialisers. Only NDI
-            // runtime file names (or the user's explicit override) are
-            // tried, and the runtime is designed to be loaded this way.
-            match unsafe { Library::new(path) } {
+            // Loading a library runs its initialisers. Only NDI runtime file
+            // names in known locations (or the user's explicit override)
+            // are tried, and the runtime is designed to be loaded this way.
+            match open_library(path) {
                 Ok(lib) => return Self::bind(lib, path.clone()),
                 Err(e) => last = Some(e.to_string()),
             }
@@ -317,6 +357,12 @@ fn frame_to_image(f: &ffi::VideoFrameV2) -> Result<StillImage, MediaError> {
     if w == 0 || h == 0 || f.p_data.is_null() || stride < w * 4 {
         return Err(MediaError::Stream("NDI: malformed video frame".into()));
     }
+    // Sized by the sender: refuse frames that would force huge allocations.
+    if w > 16_384 || h > 16_384 || w * h > MAX_RECEIVE_PIXELS {
+        return Err(MediaError::Stream(format!(
+            "NDI: frame {w}x{h} is too large"
+        )));
+    }
     let (swap, opaque) = match f.four_cc {
         ffi::FOURCC_RGBA => (false, false),
         ffi::FOURCC_RGBX => (false, true),
@@ -442,6 +488,7 @@ impl FrameSink for NdiSender {
     fn send(&mut self, image: &Arc<StillImage>) -> Result<(), MediaError> {
         let w = i32::try_from(image.width()).map_err(|_| MediaError::Empty)?;
         let h = i32::try_from(image.height()).map_err(|_| MediaError::Empty)?;
+        let stride = w.checked_mul(4).ok_or(MediaError::Empty)?;
         let frame = ffi::VideoFrameV2 {
             xres: w,
             yres: h,
@@ -453,7 +500,7 @@ impl FrameSink for NdiSender {
             timecode: ffi::TIMECODE_SYNTHESIZE,
             // The runtime only reads the pixels during this call.
             p_data: image.rgba8().as_ptr().cast_mut(),
-            line_stride_in_bytes: w * 4,
+            line_stride_in_bytes: stride,
             p_metadata: std::ptr::null(),
             timestamp: 0,
         };
