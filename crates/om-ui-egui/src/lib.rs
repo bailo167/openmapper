@@ -56,6 +56,8 @@ pub struct OpenMapperApp {
     effective: Option<om_project::Project>,
     show_tab: show_ui::ShowTab,
     live_ui: live_ui::LiveUi,
+    /// Output windows currently open (raised once when they first open).
+    open_outputs: std::collections::HashSet<OutputId>,
     dmx_ui: dmx_ui::DmxUi,
     displays: Vec<Display>,
     display_error: Option<String>,
@@ -114,6 +116,7 @@ impl OpenMapperApp {
             show_tab: show_ui::ShowTab::Cues,
             dmx_ui: dmx_ui::DmxUi::default(),
             live_ui: live_ui::LiveUi::new(adapters.live.clone().map(om_engine::Discovery::new)),
+            open_outputs: std::collections::HashSet::new(),
             trust: om_engine::trust::TrustStore::load_default(),
             trust_checked: None,
         };
@@ -1406,6 +1409,7 @@ impl OpenMapperApp {
             return;
         };
         let outputs = self.session.project().outputs.clone();
+        let mut shown = std::collections::HashSet::new();
         for o in outputs.iter().filter(|o| o.enabled) {
             let Some(display) = o
                 .display
@@ -1423,10 +1427,15 @@ impl OpenMapperApp {
             else {
                 continue;
             };
+            // On a single display the control window would otherwise cover
+            // the show: keep outputs above it (where the platform supports
+            // window levels) and raise each one when it opens (Wayland has
+            // no window levels; Escape closes an output).
             let builder = egui::ViewportBuilder::default()
                 .with_title(format!("OpenMapper — {}", o.name))
                 .with_monitor(display.index as usize)
-                .with_decorations(false);
+                .with_decorations(false)
+                .with_window_level(egui::WindowLevel::AlwaysOnTop);
             let id = egui::ViewportId::from_hash_of(("output", o.id));
             let close = ctx.show_viewport_immediate(id, builder, |ui, _class| {
                 let rect = ui.max_rect();
@@ -1444,8 +1453,14 @@ impl OpenMapperApp {
                     name: None,
                     enabled: Some(false),
                 });
+            } else {
+                shown.insert(o.id);
+                if !self.open_outputs.contains(&o.id) {
+                    ctx.send_viewport_cmd_to(id, egui::ViewportCommand::Focus);
+                }
             }
         }
+        self.open_outputs = shown;
     }
 
     fn preview_id(&self) -> Option<egui::TextureId> {
