@@ -11,7 +11,7 @@ and `prompts/`.
 | 4 | Surfaces, masks, effects, ISF | **verified** (3-OS CI incl. WARP and lavapipe) |
 | 5 | Control & show engine | **verified** (3-OS CI; physical MIDI controller sign-off pending hardware) |
 | 6 | Live video & pro I/O | **verified** (3-OS CI incl. Syphon on macOS, Spout on Windows/WARP; camera, NDI and DeckLink await hardware/runtime — see docs/parity/m6-live-io.yaml) |
-| 7 | DMX & LED mapping | **active** |
-| 8 | Advanced mapping & calibration | pending |
+| 7 | DMX & LED mapping | done — software **verified** on 3-OS CI (packet goldens, pixel-mapping goldens, compressed 30-min stream); **physical Art-Net/sACN node test awaits hardware** |
+| 8 | Advanced mapping & calibration | **active** |
 | 9 | Plugins & resilience | pending |
 | 10 | Parity audit & production hardening | pending |
