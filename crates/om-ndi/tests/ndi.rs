@@ -4,7 +4,6 @@
 //! missing runtime a failure (for machines that have one).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -29,14 +28,44 @@ fn runtime_or_skip() -> bool {
     }
 }
 
+/// Smooth content identifying frame `i` by its blue level. NDI's video
+/// codec is lossy (and subsamples colour), so fine detail would not
+/// survive; smooth gradients come back within a few levels.
 fn frame(i: u32) -> Arc<StillImage> {
     let (w, h) = (64u32, 36u32);
     #[allow(clippy::cast_possible_truncation)]
     let px = (0..w * h)
-        .flat_map(|p| [(p + i) as u8, (p * 3) as u8, i as u8, 255])
+        .flat_map(|p| {
+            let (x, y) = (p % w, p / w);
+            [
+                (x * 4) as u8,
+                (64 + y * 3) as u8,
+                ((i % 20) * 12) as u8,
+                255,
+            ]
+        })
         .collect();
     Arc::new(StillImage::from_rgba8(w, h, px).unwrap())
 }
+
+/// Mean and largest per-channel difference between two equal-size images.
+fn difference(a: &StillImage, b: &StillImage) -> (f64, u8) {
+    let mut sum = 0u64;
+    let mut max = 0u8;
+    for (x, y) in a.rgba8().iter().zip(b.rgba8()) {
+        let d = x.abs_diff(*y);
+        sum += u64::from(d);
+        max = max.max(d);
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let mean = sum as f64 / a.rgba8().len() as f64;
+    (mean, max)
+}
+
+/// Lossy-codec tolerance (8-bit levels), measured with the macOS NDI 6
+/// runtime: mean ≈ 1.5, max ≤ 7 on this content.
+const MEAN_TOLERANCE: f64 = 3.0;
+const MAX_TOLERANCE: u8 = 12;
 
 #[test]
 fn opener_reports_a_missing_runtime_cleanly() {
@@ -95,7 +124,6 @@ fn loopback_through_the_installed_runtime() {
         LiveInput::Ndi { source },
         config,
     );
-    let sent: HashSet<Vec<u8>> = (0..2000).map(|i| frame(i).rgba8().to_vec()).collect();
     let mut seen = 0;
     let mut matched = 0;
     let mut i = 0;
@@ -105,9 +133,21 @@ fn loopback_through_the_installed_runtime() {
         std::thread::sleep(Duration::from_millis(16));
         while let Some(f) = rx.newer_than(seen) {
             seen = f.seq;
+            let img = &f.image;
+            assert_eq!((img.width(), img.height()), (64, 36));
+            // The closest of the distinct frames sent must be within the
+            // codec's tolerance (wrong channel order or layout would not be).
+            let (mean, max) = (0..20)
+                .map(|k| difference(img, &frame(k)))
+                .min_by(|a, b| a.0.total_cmp(&b.0))
+                .unwrap();
             assert!(
-                sent.contains(f.image.rgba8()),
-                "NDI frame differs from what was sent"
+                mean <= MEAN_TOLERANCE && max <= MAX_TOLERANCE,
+                "NDI frame differs from every sent frame (mean {mean:.2}, max {max})"
+            );
+            assert!(
+                img.rgba8().as_chunks::<4>().0.iter().all(|p| p[3] == 255),
+                "alpha must survive"
             );
             matched += 1;
         }

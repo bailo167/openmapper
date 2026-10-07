@@ -10,20 +10,28 @@
 use std::ffi::CString;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ffmpeg_next as ff;
 use om_media_core::{LiveOpener, LiveSource, MediaError, StillImage};
 use om_project::LiveInput;
 
 use crate::interrupt::Interrupt;
-use crate::video::FfmpegVideo;
+use crate::video::{FfmpegVideo, LiveStep, WOULD_BLOCK_NAP};
 
 /// Longest wait for a frame before the source counts as lost.
 pub const READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Longest wait for a stream or device to open.
 pub const OPEN_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// Capture sizes asked for, best first; `None` lets the device choose.
+/// Without a size, devices such as Mac cameras pick a portrait mode.
+const CAMERA_SIZES: [Option<&str>; 3] = [Some("1920x1080"), Some("1280x720"), None];
+
+/// Capture rates asked for, best first. Many devices reject FFmpeg's
+/// default (29.97), so it comes last.
+const CAMERA_RATES: [Option<&str>; 5] = [Some("30"), Some("25"), Some("60"), Some("15"), None];
 
 /// A live FFmpeg input.
 pub struct FfmpegLive {
@@ -111,7 +119,12 @@ impl FfmpegLive {
             .map_or_else(|| device.to_owned(), |c| c.id);
         let (format, url, base): (&str, String, Vec<(&str, String)>) = if cfg!(target_os = "macos")
         {
-            ("avfoundation", format!("{id}:none"), vec![])
+            // NV12 is native to Mac cameras (FFmpeg's yuv420p default is not).
+            (
+                "avfoundation",
+                format!("{id}:none"),
+                vec![("pixel_format", "nv12".into())],
+            )
         } else if cfg!(windows) {
             (
                 "dshow",
@@ -121,19 +134,25 @@ impl FfmpegLive {
         } else {
             ("v4l2", id, vec![])
         };
-        // Some devices reject FFmpeg's default rate (29.97); try common ones.
+        // Devices reject modes they lack (quickly, before capture starts);
+        // take the first supported size/rate combination.
         let mut last = String::new();
-        for rate in [None, Some("30"), Some("25"), Some("60"), Some("15")] {
-            let mut options = base.clone();
-            if let Some(r) = rate {
-                options.push(("framerate", r.into()));
-            }
-            match Self::open(Some(format), &url, &options, Arc::clone(&stop), &what) {
-                Ok(s) => return Ok(s),
-                Err(e) => last = e.to_string(),
-            }
-            if stop.load(Ordering::Relaxed) {
-                break;
+        for size in CAMERA_SIZES {
+            for rate in CAMERA_RATES {
+                let mut options = base.clone();
+                if let Some(s) = size {
+                    options.push(("video_size", s.into()));
+                }
+                if let Some(r) = rate {
+                    options.push(("framerate", r.into()));
+                }
+                match Self::open(Some(format), &url, &options, Arc::clone(&stop), &what) {
+                    Ok(s) => return Ok(s),
+                    Err(e) => last = e.to_string(),
+                }
+                if stop.load(Ordering::Relaxed) {
+                    return Err(open_error(&what, "stopped"));
+                }
             }
         }
         Err(open_error(&what, last))
@@ -184,6 +203,8 @@ impl FfmpegLive {
             ),
             _ => format!("{}×{} {}", d.width, d.height, d.codec),
         };
+        // The no-data timer runs from the last frame (here: from opening).
+        interrupt.arm(READ_TIMEOUT);
         Ok(Self {
             video,
             interrupt,
@@ -193,18 +214,40 @@ impl FfmpegLive {
 }
 
 impl LiveSource for FfmpegLive {
-    fn next_frame(&mut self, _timeout: Duration) -> Result<Option<Arc<StillImage>>, MediaError> {
-        // FFmpeg blocks until a whole frame is decoded; the interrupt bounds
-        // that by READ_TIMEOUT (and by stop, for prompt shutdown).
-        self.interrupt.arm(READ_TIMEOUT);
-        match om_media_core::MediaSource::next_frame(&mut self.video) {
-            Ok(Some(f)) => Ok(Some(f.image)),
-            Ok(None) => Err(MediaError::Stream("stream ended".into())),
-            Err(e) if self.interrupt.fired() => Err(MediaError::Stream(format!(
-                "no data for {} s ({e})",
-                READ_TIMEOUT.as_secs()
-            ))),
-            Err(e) => Err(e),
+    fn next_frame(&mut self, timeout: Duration) -> Result<Option<Arc<StillImage>>, MediaError> {
+        // Network reads block inside FFmpeg, bounded by the interrupt
+        // (READ_TIMEOUT since the last frame, or stop). Capture devices
+        // instead answer "try again", and some ignore the interrupt, so
+        // those waits happen here, returning within `timeout`.
+        let start = Instant::now();
+        loop {
+            let lost = || {
+                if self.interrupt.stop.load(Ordering::Relaxed) {
+                    "stopped".to_owned()
+                } else {
+                    format!("no data for {} s", READ_TIMEOUT.as_secs())
+                }
+            };
+            match self.video.step() {
+                Ok(LiveStep::Frame(f)) => {
+                    self.interrupt.arm(READ_TIMEOUT);
+                    return Ok(Some(f.image));
+                }
+                Ok(LiveStep::End) => return Err(MediaError::Stream("stream ended".into())),
+                Ok(LiveStep::WouldBlock) => {
+                    if self.interrupt.fired() {
+                        return Err(MediaError::Stream(lost()));
+                    }
+                    if start.elapsed() >= timeout {
+                        return Ok(None);
+                    }
+                    std::thread::sleep(WOULD_BLOCK_NAP);
+                }
+                Err(e) if self.interrupt.fired() => {
+                    return Err(MediaError::Stream(format!("{} ({e})", lost())));
+                }
+                Err(e) => return Err(e),
+            }
         }
     }
 

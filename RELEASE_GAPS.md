@@ -37,7 +37,10 @@ growth. Procedure: docs/release/checklist.md §Hardware.
 ### G-02 Camera input (P0 `live.camera`)
 A real camera on each OS, including the OS permission prompt (cannot be
 answered unattended), disconnect/reconnect, and a project-trust prompt for
-a shared project using the camera.
+a shared project using the camera. **macOS capture passed** on 2026-10-08
+(MacBook Air camera, 1920×1080 at 30 fps, no reconnects); still open:
+Windows and Linux cameras, unplug/replug, and the trust prompt. The signed
+macOS app bundle must declare `NSCameraUsageDescription`.
 
 ### G-03 DMX node and console (P0 `dmx.physical-node`)
 An Art-Net node and an sACN receiver driving an LED fixture from a pixel
@@ -52,6 +55,8 @@ structured-light workflow with a real camera.
 ### G-05 NDI runtime (P1 `live.ndi`)
 Install the NDI runtime on each OS and run the NDI tests with
 `OM_REQUIRE_NDI=1` (send/receive loopback, discovery, reconnect).
+**macOS passed** on 2026-10-08 with an installed runtime; Windows and Linux
+remain, plus interop with a third-party NDI application.
 
 ### G-06 MIDI controller
 A physical MIDI controller: hot-plug, learn, CC and notes driving

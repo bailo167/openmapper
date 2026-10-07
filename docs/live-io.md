@@ -91,7 +91,19 @@ camera or silent stream therefore becomes an error and a reconnect, not a
 hang. There is no separate `om-live-input` crate: FFmpeg already covers
 capture devices on all three OSes (D-020). On macOS the camera list comes
 from AVFoundation, whose names match FFmpeg's. The first use asks for camera
-permission (a one-time OS dialog).
+permission (a one-time OS dialog). macOS attributes the request to the app
+that launched OpenMapper: run from Terminal, it is Terminal that needs
+camera access; a future signed app bundle must declare
+`NSCameraUsageDescription` in its `Info.plist`.
+
+Cameras are opened at 1920×1080, then 1280×720, then the device's own
+choice, each at 30, 25, 60 or 15 fps before FFmpeg's default 29.97, which
+many devices reject; without a size, Mac cameras pick a portrait mode. On
+macOS the native NV12 format is requested. Capture devices may answer
+"try again" when no new picture is ready, and some ignore FFmpeg's
+interrupt, so that wait happens in OpenMapper's own loop, which returns
+within the supervisor's poll interval and gives up after the no-data
+timeout.
 
 ### Syphon (macOS)
 
@@ -167,8 +179,8 @@ openmapper-cli live probe spout:"OpenMapper Output 1"
 | Streams | Bit-exact lossless TCP loopback, in-process and cross-process; MPEG-2/UDP colour round trip; reconnect stress; engine publish→receive loopback |
 | Syphon | macOS CI: bit-exact loopback with discovery and resize, reconnect rounds, cross-process bit-exact |
 | Spout | Windows CI (WARP): the same tests, plus duplicate-name refusal |
-| NDI | Layout and conversion unit tests; loopback only where a runtime is installed |
-| Cameras | Implemented-unverified: needs a physical camera and permission dialog |
+| NDI | Layout and conversion unit tests; loopback (lossy-codec tolerance) where a runtime is installed — passed on macOS |
+| Cameras | macOS: physical test passed (1080p30, no reconnects). Windows and Linux: implemented-unverified, need a physical camera |
 
 Interoperability with *third-party* Syphon/Spout applications follows
 their published conventions, but each is checked only by hand (release

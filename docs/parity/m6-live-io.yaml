@@ -29,12 +29,26 @@
   priority: P1
   status: implemented-unverified
   tests: [struct_layouts, frames_convert_from_every_rgb_layout, a_missing_runtime_is_reported_not_fatal, opener_reports_a_missing_runtime_cleanly, loopback_through_the_installed_runtime]
-  notes: Needs an installed NDI runtime (not bundled; DECISIONS.md D-022). Run with OM_REQUIRE_NDI=1.
+  platforms: { macos: pass, windows: pending, linux: pending }
+  notes: >-
+    Needs an installed NDI runtime (not bundled; DECISIONS.md D-022). Run with
+    OM_REQUIRE_NDI=1. macOS loopback passed 2026-10-08 against an installed
+    runtime (/usr/local/lib/libndi.dylib): discovery, send and receive, size,
+    channel order and alpha correct. NDI's codec is lossy, so the loopback
+    compares smooth content within a tolerance (measured mean ≈1.5, max ≤7
+    levels); the first run had wrongly expected bit-exact frames.
 - feature: live.camera
   priority: P0
   status: implemented-unverified
-  tests: []
-  notes: Needs a physical camera and the OS permission dialog (pending human test).
+  platforms: { macos: pass, windows: pending, linux: pending }
+  tests: [hardware: openmapper-cli live probe]
+  notes: >-
+    macOS physical test 2026-10-08 (MacBook Air camera via Terminal's camera
+    permission): 1920×1080 at 30 fps, 280 frames in 10 s, no reconnects,
+    prompt stop. That test found and fixed two bugs: AVFoundation's
+    "try again" (EAGAIN) was treated as fatal (a reconnect every ~2 frames),
+    and no capture size was requested (a portrait mode was chosen). Windows
+    and Linux cameras still need a physical test.
 - feature: live.decklink
   priority: P2
   status: deferred
