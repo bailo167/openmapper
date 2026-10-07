@@ -180,7 +180,23 @@ impl OscQueryServer {
         advertise: bool,
     ) -> Result<Self, OscQueryError> {
         let err = |m: String| OscQueryError { port, message: m };
-        let server = tiny_http::Server::http(("0.0.0.0", port)).map_err(|e| err(e.to_string()))?;
+        // std's listener sets SO_REUSEADDR on Unix; also retry briefly while
+        // a just-stopped server's accept thread still holds the port.
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let listener = loop {
+            match std::net::TcpListener::bind(("0.0.0.0", port)) {
+                Ok(l) => break l,
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::AddrInUse
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(e) => return Err(err(e.to_string())),
+            }
+        };
+        let server =
+            tiny_http::Server::from_listener(listener, None).map_err(|e| err(e.to_string()))?;
         let port = server
             .server_addr()
             .to_ip()
