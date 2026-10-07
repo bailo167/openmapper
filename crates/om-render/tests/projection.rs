@@ -73,6 +73,7 @@ fn canvas(image: &StillImage) -> Option<Compositor> {
             pattern: PatternKind::White,
         },
         playback: Default::default(),
+        plugins: Vec::new(),
         extensions: Default::default(),
     });
     let mut s = Surface::new(SurfaceId::from_u128(1), "full");

@@ -100,8 +100,28 @@ pub struct Media {
     /// Time-based media only (video, sequences); ignored for stills.
     #[serde(default)]
     pub playback: Playback,
+    /// WebAssembly plugin filters applied to every frame, in order
+    /// (docs/plugins.md).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plugins: Vec<PluginUse>,
     #[serde(default)]
     pub extensions: Extensions,
+}
+
+/// Most plugins per media item.
+pub const MAX_PLUGINS: usize = 8;
+
+/// One plugin filter on a media item. Its parameters are its saved state.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginUse {
+    /// The `.wasm` (or `.wat`) file, relative to the project when possible.
+    pub path: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Parameter values by name (unlisted parameters use their defaults).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub params: BTreeMap<String, Finite>,
 }
 
 /// How time-based media plays.
@@ -329,6 +349,21 @@ impl MediaSource {
             | Self::Shader { path, .. } => Some(path),
             Self::Pattern { .. } | Self::Live { .. } => None,
         }
+    }
+
+    /// The same source with its file or folder path replaced (sources
+    /// without a path are returned unchanged).
+    #[must_use]
+    pub fn with_path(&self, new: &str) -> Self {
+        let mut s = self.clone();
+        match &mut s {
+            Self::Image { path }
+            | Self::Video { path }
+            | Self::Sequence { path, .. }
+            | Self::Shader { path, .. } => *path = new.to_owned(),
+            Self::Pattern { .. } | Self::Live { .. } => {}
+        }
+        s
     }
 
     /// True for sources with a timeline (video, sequences).

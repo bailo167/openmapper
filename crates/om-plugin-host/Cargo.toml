@@ -1,0 +1,16 @@
+[package]
+name = "om-plugin-host"
+description = "OpenMapper WebAssembly plugin host (Wasmtime): capability-restricted, bounded, interruptible"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+om-plugin-api.workspace = true
+wasmtime.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

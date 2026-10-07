@@ -81,6 +81,15 @@ enum Action {
         #[arg(long, default_value = "1920x1080")]
         size: String,
     },
+    /// Find missing media by file name under a folder and relink it.
+    Relink {
+        path: PathBuf,
+        /// Folder to search (recursively).
+        folder: PathBuf,
+        /// Only list what would change.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Camera-assisted calibration with Gray-code structured light.
     StructuredLight {
         #[command(subcommand)]
@@ -308,6 +317,11 @@ fn run(cli: Cli) -> Result<(), String> {
         Action::Live { action } => live(action),
         Action::Dmx { action } => dmx(action),
         Action::StructuredLight { action } => structured_light(action),
+        Action::Relink {
+            path,
+            folder,
+            dry_run,
+        } => relink(&path, &folder, dry_run),
     }
 }
 
@@ -431,8 +445,32 @@ fn load_media(
     for (path, compiled) in &changes.shaders {
         compositor.set_shader(path, compiled);
     }
+    // Plugin filters: run each new frame through its chain and wait (bounded)
+    // so offline renders are deterministic.
+    let mut plugins = om_engine::plugins::PluginStage::new();
+    plugins.sync(project, dir);
     for (id, img) in &changes.upload {
-        if let Err(e) = compositor.set_image(*id, img) {
+        let processed = if plugins.has_chain(*id) {
+            plugins.submit(*id, img, t.as_seconds_f64());
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                if let Some((_, out)) = plugins.poll().into_iter().find(|(m, _)| m == id) {
+                    break Some(out);
+                }
+                if std::time::Instant::now() > deadline || plugins.failed(*id) {
+                    break None;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        } else {
+            None
+        };
+        if warn {
+            for s in plugins.status(*id).iter().filter(|s| !s.ok) {
+                eprintln!("warning: media {id} plugin {}: {}", s.name, s.state);
+            }
+        }
+        if let Err(e) = compositor.set_image(*id, processed.as_ref().unwrap_or(img)) {
             eprintln!("warning: media {id}: {e}");
         }
     }
@@ -708,6 +746,30 @@ fn structured_light(action: LightAction) -> Result<(), String> {
             Ok(())
         }
     }
+}
+
+fn relink(path: &Path, folder: &Path, dry_run: bool) -> Result<(), String> {
+    let (mut session, report) = Session::open(path).map_err(|e| e.to_string())?;
+    for w in &report.warnings {
+        eprintln!("warning: {w}");
+    }
+    let dir = session.project_dir().map(Path::to_path_buf);
+    let missing = om_engine::relink::missing(session.project(), dir.as_deref());
+    let found = om_engine::relink::find(session.project(), dir.as_deref(), folder);
+    for r in &found {
+        println!("{:?}: {} -> {}", r.name, r.old, r.new);
+    }
+    println!("{} of {} missing media found", found.len(), missing.len());
+    let cmd = om_engine::relink::command(&found).filter(|_| !dry_run);
+    let Some(cmd) = cmd else {
+        // Nothing to change: leave the file and any recovery journal as
+        // they are (closing would discard recovered, unsaved work).
+        drop(session);
+        return Ok(());
+    };
+    session.execute(cmd).map_err(|e| e.to_string())?;
+    session.save().map_err(|e| e.to_string())?;
+    session.close().map_err(|e| e.to_string())
 }
 
 fn parse_size(s: &str) -> Result<(u32, u32), String> {

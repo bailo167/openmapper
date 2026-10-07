@@ -47,6 +47,7 @@ fn add_live(app: &mut OpenMapperApp, input: LiveInput) {
             name,
             source: MediaSource::Live { input },
             playback: Default::default(),
+            plugins: Vec::new(),
             extensions: Default::default(),
         },
         index: None,

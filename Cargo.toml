@@ -19,6 +19,8 @@ members = [
     "crates/om-midi",
     "crates/om-dmx",
     "crates/om-calibration",
+    "crates/om-plugin-api",
+    "crates/om-plugin-host",
     "crates/om-engine",
     "crates/om-spout",
     "crates/om-ndi",
@@ -62,6 +64,8 @@ om-oscquery = { path = "crates/om-oscquery" }
 om-midi = { path = "crates/om-midi" }
 om-dmx = { path = "crates/om-dmx" }
 om-calibration = { path = "crates/om-calibration" }
+om-plugin-api = { path = "crates/om-plugin-api" }
+om-plugin-host = { path = "crates/om-plugin-host" }
 om-engine = { path = "crates/om-engine" }
 om-ui-egui = { path = "crates/om-ui-egui" }
 
@@ -110,6 +114,8 @@ windows = { version = "0.62.2", features = [
 libloading = "0.8.9"
 # Builds the vendored Syphon sources (macOS).
 cc = "1.6.0"
+# WebAssembly plugins (milestone 9): JIT, WAT text for fixtures, no WASI.
+wasmtime = { version = "49.0.2", default-features = false, features = ["std", "runtime", "cranelift", "wat", "anyhow"] }
 rosc = "0.11.4"
 tiny_http = "0.12.0"
 mdns-sd = "0.21.5"

@@ -41,6 +41,7 @@ fn video_frames_and_audio_samples_line_up_on_the_show_clock() {
             path: "av.mkv".into(),
         },
         playback: Playback::default(), // looping
+        plugins: Vec::new(),
         extensions: Default::default(),
     });
     let mixer = Mixer::new(48_000);

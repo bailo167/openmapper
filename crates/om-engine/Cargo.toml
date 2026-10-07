@@ -8,6 +8,8 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+om-plugin-host.workspace = true
+om-plugin-api.workspace = true
 om-types.workspace = true
 om-project.workspace = true
 om-command.workspace = true

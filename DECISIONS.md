@@ -272,3 +272,33 @@ fit for flat screens. It is verified with a synthetic camera; physical
 verification waits for a camera. Driving the camera from the app,
 camera-based 3-D calibration, click-to-pick in output windows and lens
 distortion come later.
+
+## D-026 — Plugin ABI, sandbox and resilience (2026-10-07)
+
+**ABI v1 is a core WebAssembly module**, not a WIT component. The
+interface is the WIT-equivalent `openmapper:plugin@1.0.0` contract
+(metadata, configure-by-parameters, process on CPU buffers, host
+log/time) expressed as five exports and two imports. Reasons: fixtures
+can be plain WAT text checked into the repo, so no guest toolchain is
+needed in CI; it is simple to support from any language; and Wasmtime
+needs only its core runtime. A WIT/component front end can wrap the same
+semantics later as ABI v2. Wasmtime (49.0.2) runs with fuel *and* epoch
+interruption, a per-instance memory cap, and no WASI. Imports outside the
+declared capabilities refuse to load. Plugins are **media filters**,
+applied to every frame of a media item on the CPU before upload, so
+every surface showing that media sees the result, and run on per-plugin
+threads (newest frame wins). The original frame shows until a chain
+produces output and whenever it cannot run. Parameters are the persisted
+state; instance memory is not saved in v1.
+
+Resilience: crash injection (random process kills while editing and
+saving) found that reopening a project **rewrote the recovery journal in
+place**, so a crash during that rewrite could lose recovered work. The
+journal is now replaced atomically (temp file, fsync, rename). Journal
+entries are also forced to disk at most 1 s after being written (timed
+fsync batching, revisiting D-004), bounding the power-loss window.
+N-2 migration is verified with a synthetic three-version chain until real
+versions exist; a v1 compatibility fixture using every feature must keep
+loading. Missing media is relinked by file name from a folder the user
+chooses, preferring candidates whose parent folders match, in one undo
+step.

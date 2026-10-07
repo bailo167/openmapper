@@ -242,6 +242,7 @@ fn arb_new_command() -> impl Strategy<Value = Command> {
                     pattern: PatternKind::UvGrid
                 },
                 playback: Default::default(),
+                plugins: Vec::new(),
                 extensions: Default::default(),
             },
             index,
@@ -355,6 +356,17 @@ fn arb_dmx_command() -> impl Strategy<Value = Command> {
         ),
         fid.prop_map(|id| Command::RemoveFixture { id }),
         (0u32..50).prop_map(|rate| Command::SetDmxRate { rate }),
+        proptest::collection::vec((1u128..4, "[a-z]{0,3}"), 0..3).prop_map(|v| {
+            Command::RelinkMedia {
+                changes: v
+                    .into_iter()
+                    .map(|(id, path)| crate::MediaPath {
+                        id: MediaId::from_u128(id),
+                        path: format!("{path}.png"),
+                    })
+                    .collect(),
+            }
+        }),
     ]
 }
 
@@ -514,6 +526,7 @@ fn media_in_use_cannot_be_removed() {
                 pattern: PatternKind::UvGrid,
             },
             playback: Default::default(),
+            plugins: Vec::new(),
             extensions: Default::default(),
         },
         index: None,
@@ -557,6 +570,7 @@ mod params_tests {
                     path: "a.mp4".into(),
                 },
                 playback: Default::default(),
+                plugins: Vec::new(),
                 extensions: Default::default(),
             },
             index: None,

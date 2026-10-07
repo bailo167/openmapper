@@ -20,10 +20,10 @@ pub use param::{ParamId, ParamKind, ParamValue};
 pub use schema::{
     BlendMode, CalibrationPoint, Canvas, DisplayTarget, Effect, EffectKind, Extensions, LiveInput,
     MAX_BLUR_RADIUS, MAX_CALIBRATION_POINTS, MAX_EFFECTS, MAX_MASK_POINTS, MAX_MESH_DIVISIONS,
-    MAX_PUBLISH, Mask, MaskPoint, Media, MediaSource, Output, OutputMapping, PUBLISH_SCHEMES,
-    PatternKind, Playback, Project, Projection, ProjectorParams, Publish, STREAM_FPS,
-    STREAM_SCHEMES, ShaderValue, Shape, SoftEdge, StreamCodec, Surface, Timebase, line_quad,
-    validate_stream_url,
+    MAX_PLUGINS, MAX_PUBLISH, Mask, MaskPoint, Media, MediaSource, Output, OutputMapping,
+    PUBLISH_SCHEMES, PatternKind, Playback, PluginUse, Project, Projection, ProjectorParams,
+    Publish, STREAM_FPS, STREAM_SCHEMES, ShaderValue, Shape, SoftEdge, StreamCodec, Surface,
+    Timebase, line_quad, validate_stream_url,
 };
 pub use show::{
     AudioBand, Controls, Cue, CueValue, Ease, Keyframe, LfoShape, Marker, Master, MidiBinding,
@@ -170,6 +170,15 @@ impl Project {
                 && let Err(e) = input.validate()
             {
                 return invalid(format!("media {}: {e}", m.id));
+            }
+            if m.plugins.len() > MAX_PLUGINS {
+                return invalid(format!(
+                    "media {} has more than {MAX_PLUGINS} plugins",
+                    m.id
+                ));
+            }
+            if m.plugins.iter().any(|p| p.path.trim().is_empty()) {
+                return invalid(format!("media {} has a plugin without a file", m.id));
             }
         }
         for s in &self.surfaces {

@@ -37,6 +37,8 @@ pub struct Viewer {
     pub publish: PublishRuntime,
     /// Art-Net/sACN output sampled from the canvas (LED pixel mapping).
     pub dmx: om_dmx::DmxRuntime,
+    /// WebAssembly plugin filters on media.
+    pub plugins: om_engine::plugins::PluginStage,
     reader: FrameReader,
     mixer: Option<om_audio::Mixer>,
     _audio_out: Option<om_audio::Output>,
@@ -103,6 +105,7 @@ impl Viewer {
                 .with_live(adapters.live.clone()),
             publish: PublishRuntime::new(adapters.sinks.clone()),
             dmx: om_dmx::DmxRuntime::new(),
+            plugins: om_engine::plugins::PluginStage::new(),
             reader: FrameReader::new(&render_state.device, &render_state.queue),
             mixer,
             _audio_out: audio_out,
@@ -134,7 +137,8 @@ impl Viewer {
             m.set_clock(audio_clock(transport, m.rate()));
         }
         let changes = self.media.update(project, project_dir, show);
-        self.apply_media(&changes);
+        self.plugins.sync(project, project_dir);
+        self.apply_media(&changes, show.as_seconds_f64());
         let inputs = om_render::FrameInputs {
             show_seconds: show.as_seconds_f64(),
             media_seconds: changes.shader_times.iter().copied().collect(),
@@ -172,16 +176,28 @@ impl Viewer {
         }
     }
 
-    fn apply_media(&mut self, changes: &om_engine::MediaChanges) {
+    fn apply_media(&mut self, changes: &om_engine::MediaChanges, time: f64) {
         for id in &changes.unload {
             self.compositor.remove_image(*id);
             self.thumbs.remove(id);
         }
         for (id, img) in &changes.upload {
-            if let Err(e) = self.compositor.set_image(*id, img) {
+            if self.plugins.has_chain(*id) {
+                self.plugins.submit(*id, img, time);
+            }
+            // The original shows until plugins produce output (or if they
+            // cannot run).
+            if self.plugins.shows_original(*id)
+                && let Err(e) = self.compositor.set_image(*id, img)
+            {
                 self.last_error = Some(e.to_string());
             }
             self.update_thumbnail(*id, img);
+        }
+        for (id, img) in self.plugins.poll() {
+            if let Err(e) = self.compositor.set_image(id, &img) {
+                self.last_error = Some(e.to_string());
+            }
         }
         for path in &changes.shaders_removed {
             self.compositor.remove_shader(path);

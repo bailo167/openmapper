@@ -1,0 +1,438 @@
+{
+  "format": "openmapper-project",
+  "version": 1,
+  "project_id": "01J9ZZZZZZZZZZZZZZZZZZZZZZ",
+  "revision": 42,
+  "name": "Compatibility fixture v1",
+  "timebase": {
+    "ticks_per_second": "254016000000"
+  },
+  "canvas": {
+    "width": 1920,
+    "height": 1080
+  },
+  "media": [
+    {
+      "id": "00000000000000000000000101",
+      "name": "grid",
+      "source": {
+        "kind": "pattern",
+        "pattern": "uv_grid"
+      },
+      "playback": {
+        "looping": true,
+        "speed": {
+          "num": 1,
+          "den": 1
+        },
+        "volume": 1.0
+      },
+      "extensions": {}
+    },
+    {
+      "id": "00000000000000000000000102",
+      "name": "clip",
+      "source": {
+        "kind": "video",
+        "path": "media/clip.mp4"
+      },
+      "playback": {
+        "looping": false,
+        "speed": {
+          "num": 1,
+          "den": 2
+        },
+        "volume": 0.5
+      },
+      "extensions": {}
+    },
+    {
+      "id": "00000000000000000000000103",
+      "name": "still",
+      "source": {
+        "kind": "image",
+        "path": "media/logo.png"
+      },
+      "playback": {
+        "looping": true,
+        "speed": {
+          "num": 1,
+          "den": 1
+        },
+        "volume": 1.0
+      },
+      "extensions": {}
+    },
+    {
+      "id": "00000000000000000000000104",
+      "name": "frames",
+      "source": {
+        "kind": "sequence",
+        "path": "media/frames",
+        "rate": {
+          "num": 25,
+          "den": 1
+        }
+      },
+      "playback": {
+        "looping": true,
+        "speed": {
+          "num": 1,
+          "den": 1
+        },
+        "volume": 1.0
+      },
+      "extensions": {}
+    },
+    {
+      "id": "00000000000000000000000105",
+      "name": "camera",
+      "source": {
+        "kind": "live",
+        "input": {
+          "type": "camera",
+          "device": "FaceTime HD Camera"
+        }
+      },
+      "playback": {
+        "looping": true,
+        "speed": {
+          "num": 1,
+          "den": 1
+        },
+        "volume": 1.0
+      },
+      "extensions": {}
+    },
+    {
+      "id": "00000000000000000000000106",
+      "name": "srt",
+      "source": {
+        "kind": "live",
+        "input": {
+          "type": "stream",
+          "url": "srt://:9000?mode=listener"
+        }
+      },
+      "playback": {
+        "looping": true,
+        "speed": {
+          "num": 1,
+          "den": 1
+        },
+        "volume": 1.0
+      },
+      "extensions": {}
+    }
+  ],
+  "surfaces": [
+    {
+      "id": "00000000000000000000000201",
+      "name": "wall",
+      "enabled": true,
+      "opacity": 0.8,
+      "shape": {
+        "kind": "quad",
+        "corners": [
+          [
+            0.1,
+            0.1
+          ],
+          [
+            0.9,
+            0.05
+          ],
+          [
+            0.95,
+            0.9
+          ],
+          [
+            0.05,
+            0.95
+          ]
+        ],
+        "uv": [
+          [
+            0.0,
+            0.0
+          ],
+          [
+            1.0,
+            0.0
+          ],
+          [
+            1.0,
+            1.0
+          ],
+          [
+            0.0,
+            1.0
+          ]
+        ]
+      },
+      "blend": "add",
+      "effects": [
+        {
+          "enabled": true,
+          "kind": {
+            "effect": "color",
+            "brightness": 0.1,
+            "contrast": 1.2,
+            "saturation": 0.9,
+            "hue": 0.0,
+            "gamma": 1.0
+          }
+        },
+        {
+          "enabled": true,
+          "kind": {
+            "effect": "blur",
+            "radius": 3.0
+          }
+        }
+      ],
+      "media": "00000000000000000000000101",
+      "extensions": {}
+    },
+    {
+      "id": "00000000000000000000000202",
+      "name": "line",
+      "enabled": true,
+      "opacity": 1.0,
+      "shape": {
+        "kind": "line",
+        "ends": [
+          [
+            0.2,
+            0.5
+          ],
+          [
+            0.8,
+            0.5
+          ]
+        ],
+        "width": 0.02,
+        "uv": [
+          [
+            0.0,
+            0.0
+          ],
+          [
+            1.0,
+            0.0
+          ],
+          [
+            1.0,
+            1.0
+          ],
+          [
+            0.0,
+            1.0
+          ]
+        ]
+      },
+      "blend": "normal",
+      "media": "00000000000000000000000103",
+      "extensions": {}
+    }
+  ],
+  "outputs": [
+    {
+      "id": "00000000000000000000000301",
+      "name": "Left",
+      "enabled": true,
+      "display": {
+        "name": "Projector",
+        "index": 1
+      },
+      "publish": [
+        {
+          "type": "syphon",
+          "name": "OpenMapper Left"
+        },
+        {
+          "type": "stream",
+          "url": "tcp://10.0.0.2:9000",
+          "codec": "lossless",
+          "fps": 30
+        }
+      ],
+      "mapping": {
+        "region": [
+          [
+            0.0,
+            0.0
+          ],
+          [
+            0.6,
+            0.0
+          ],
+          [
+            0.6,
+            1.0
+          ],
+          [
+            0.0,
+            1.0
+          ]
+        ],
+        "warp": [
+          [
+            0.01,
+            0.0
+          ],
+          [
+            1.0,
+            0.02
+          ],
+          [
+            0.99,
+            1.0
+          ],
+          [
+            0.0,
+            0.98
+          ]
+        ],
+        "soft_edge": {
+          "left": 0.0,
+          "right": 0.3333,
+          "top": 0.0,
+          "bottom": 0.0,
+          "curve": 2.0,
+          "gamma": 2.2
+        }
+      },
+      "extensions": {}
+    },
+    {
+      "id": "00000000000000000000000302",
+      "name": "Stage",
+      "enabled": false,
+      "projection": {
+        "model": "models/stage.obj",
+        "projector": {
+          "width": 1920,
+          "height": 1080,
+          "fx": 2200.5,
+          "fy": 2199.25,
+          "cx": 960.0,
+          "cy": 1010.0,
+          "rotation": [
+            0.3,
+            -0.5,
+            0.05
+          ],
+          "translation": [
+            0.0,
+            -0.3,
+            3.0
+          ]
+        },
+        "points": [
+          {
+            "world": [
+              -0.5,
+              -0.5,
+              -0.5
+            ],
+            "pixel": [
+              512.25,
+              288.5
+            ]
+          }
+        ]
+      },
+      "extensions": {}
+    }
+  ],
+  "show": {
+    "cues": [
+      {
+        "id": "00000000000000000000000401",
+        "name": "Dim",
+        "fade": 2.5,
+        "values": [
+          {
+            "param": "master/opacity",
+            "value": 0.25
+          },
+          {
+            "param": "surface/00000000000000000000000201/enabled",
+            "value": true
+          }
+        ]
+      }
+    ],
+    "timelines": [],
+    "modulators": []
+  },
+  "master": {
+    "opacity": 0.9,
+    "blackout": false
+  },
+  "controls": {
+    "osc_port": 9000,
+    "oscquery_port": 9001,
+    "midi": [
+      {
+        "port": "",
+        "message": "control_change",
+        "channel": 1,
+        "number": 7,
+        "target": {
+          "kind": "param",
+          "param": "master/opacity"
+        }
+      }
+    ]
+  },
+  "dmx": {
+    "rate": 30,
+    "nodes": [
+      {
+        "id": "00000000000000000000000501",
+        "name": "Pixel node",
+        "enabled": true,
+        "protocol": {
+          "type": "art_net",
+          "address": "2.255.255.255"
+        }
+      }
+    ],
+    "fixtures": [
+      {
+        "id": "00000000000000000000000601",
+        "name": "Strip",
+        "enabled": true,
+        "node": "00000000000000000000000501",
+        "universe": 1,
+        "address": 1,
+        "order": "grb",
+        "encoding": "srgb",
+        "brightness": 1.0,
+        "shape": {
+          "kind": "line",
+          "from": [
+            0.1,
+            0.9
+          ],
+          "to": [
+            0.9,
+            0.9
+          ],
+          "count": 120
+        }
+      }
+    ]
+  },
+  "extensions": {
+    "com.example.plugin": {
+      "state": [
+        1,
+        2,
+        3
+      ]
+    }
+  }
+}

@@ -54,6 +54,7 @@ fn project(w: u32, h: u32, surfaces: Vec<Surface>) -> Project {
             name: format!("{pattern:?}"),
             source: MediaSource::Pattern { pattern },
             playback: Default::default(),
+            plugins: Vec::new(),
             extensions: Default::default(),
         });
     }
@@ -745,6 +746,7 @@ fn shader_generator_media_renders() {
             inputs,
         },
         playback: Default::default(),
+        plugins: Vec::new(),
         extensions: Default::default(),
     });
     pr.surfaces.push(surface(1, Shape::full_quad(), shader_id));

@@ -80,6 +80,15 @@ pub enum Command {
         playback: Playback,
     },
     /// Removes a media item. Rejected while any surface uses it.
+    /// Replaces a media item's plugin filters.
+    SetMediaPlugins {
+        id: MediaId,
+        plugins: Vec<om_project::PluginUse>,
+    },
+    /// Points media at new files (relinking missing media), as one step.
+    RelinkMedia {
+        changes: Vec<MediaPath>,
+    },
     RemoveMedia {
         id: MediaId,
     },
@@ -176,6 +185,14 @@ pub enum Command {
         key: String,
         value: Option<serde_json::Value>,
     },
+}
+
+/// A media item's new file or folder path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MediaPath {
+    pub id: MediaId,
+    pub path: String,
 }
 
 /// What changed. Emitted to observers (UI, OSCQuery, …) after each command.
@@ -468,6 +485,56 @@ impl Command {
                         playback: old,
                     },
                     events: vec![Event::MediaChanged { id: *id }],
+                })
+            }
+            Self::SetMediaPlugins { id, plugins } => {
+                let at = media_index(project, *id)?;
+                if plugins.len() > om_project::MAX_PLUGINS {
+                    return Err(CommandError::Invalid("too many plugins".into()));
+                }
+                let old = std::mem::replace(&mut project.media[at].plugins, plugins.clone());
+                Ok(Applied {
+                    inverse: Self::SetMediaPlugins {
+                        id: *id,
+                        plugins: old,
+                    },
+                    events: vec![Event::MediaChanged { id: *id }],
+                })
+            }
+            Self::RelinkMedia { changes } => {
+                // Validate everything before changing anything.
+                for c in changes {
+                    let at = media_index(project, c.id)?;
+                    if project.media[at].source.path().is_none() {
+                        return Err(CommandError::Invalid(format!(
+                            "media {} has no file to relink",
+                            c.id
+                        )));
+                    }
+                    if c.path.trim().is_empty() {
+                        return Err(CommandError::Invalid("empty media path".into()));
+                    }
+                }
+                let mut inverse = Vec::with_capacity(changes.len());
+                let mut events = Vec::with_capacity(changes.len());
+                for c in changes {
+                    let at = media_index(project, c.id)?;
+                    let old = project.media[at]
+                        .source
+                        .path()
+                        .unwrap_or_default()
+                        .to_owned();
+                    project.media[at].source = project.media[at].source.with_path(&c.path);
+                    inverse.push(MediaPath {
+                        id: c.id,
+                        path: old,
+                    });
+                    events.push(Event::MediaChanged { id: c.id });
+                }
+                inverse.reverse();
+                Ok(Applied {
+                    inverse: Self::RelinkMedia { changes: inverse },
+                    events,
                 })
             }
             Self::RemoveMedia { id } => {
@@ -854,6 +921,8 @@ impl Command {
             Self::SetMediaPlayback { .. } => "Playback Settings",
             Self::SetMediaSource { .. } => "Media Source",
             Self::RemoveMedia { .. } => "Remove Media",
+            Self::RelinkMedia { .. } => "Relink Media",
+            Self::SetMediaPlugins { .. } => "Plugins",
             Self::SetCanvas { .. } => "Canvas Size",
             Self::AddOutput { .. } => "Add Output",
             Self::RemoveOutput { .. } => "Remove Output",

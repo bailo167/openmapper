@@ -48,6 +48,7 @@ fn published_output_arrives_as_live_media() {
             },
         },
         playback: Default::default(),
+        plugins: Vec::new(),
         extensions: Default::default(),
     });
     receiver.validate().unwrap();
@@ -122,6 +123,7 @@ fn live_media_without_adapter_reports_why() {
             },
         },
         playback: Default::default(),
+        plugins: Vec::new(),
         extensions: Default::default(),
     });
     let mut media = MediaRuntime::new(None);

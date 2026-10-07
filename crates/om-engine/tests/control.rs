@@ -71,6 +71,7 @@ fn setup() -> (Session, Transport, Live, u16, u16) {
                     path: "clip.mp4".into(),
                 },
                 playback: Default::default(),
+                plugins: Vec::new(),
                 extensions: Default::default(),
             },
             index: None,

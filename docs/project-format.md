@@ -136,6 +136,13 @@ gamma 0.5–4; at most 1000 calibration points; projector resolution
 1–16384 and positive focal lengths. When `projection` is set, `mapping`
 is not used.
 
+## Plugins on media
+
+`Media.plugins` (omitted when empty) lists WebAssembly filters applied in
+order (docs/plugins.md): `{ "path": "plugins/invert.wasm", "enabled":
+true, "params": { "amount": 1.0 } }`. At most 8 per media item; paths
+follow the media path rules.
+
 ## Recovery
 
 Normal save:

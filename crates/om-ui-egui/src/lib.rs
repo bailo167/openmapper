@@ -8,6 +8,7 @@ mod dmx_ui;
 mod gpu;
 mod live_ui;
 mod output_ui;
+mod plugin_ui;
 mod show_ui;
 
 use std::path::PathBuf;
@@ -40,6 +41,9 @@ pub struct OpenMapperApp {
     /// Text buffer for the project / media path field.
     path_input: String,
     media_path_input: String,
+    /// Folder searched by "Relink", and the cached count of missing media.
+    relink_folder: String,
+    missing_media: Option<(Instant, usize)>,
     status: Status,
     rename_buffer: Option<(SurfaceId, String)>,
     project_name_buffer: Option<String>,
@@ -87,6 +91,8 @@ impl OpenMapperApp {
             selected: None,
             path_input: String::from("untitled.omproj"),
             media_path_input: String::new(),
+            relink_folder: String::new(),
+            missing_media: None,
             status: Status::default(),
             rename_buffer: None,
             project_name_buffer: None,
@@ -391,8 +397,59 @@ impl OpenMapperApp {
         }
     }
 
+    /// Shown when media files are missing: search a folder and relink.
+    fn relink_controls(&mut self, ui: &mut egui::Ui) {
+        let stale = self
+            .missing_media
+            .is_none_or(|(t, _)| t.elapsed() > Duration::from_secs(2));
+        if stale {
+            let n = om_engine::relink::missing(self.session.project(), self.session.project_dir())
+                .len();
+            self.missing_media = Some((Instant::now(), n));
+        }
+        let missing = self.missing_media.map_or(0, |(_, n)| n);
+        if missing == 0 {
+            return;
+        }
+        ui.horizontal(|ui| {
+            ui.colored_label(ui.visuals().warn_fg_color, format!("{missing} missing"));
+            ui.add(
+                egui::TextEdit::singleline(&mut self.relink_folder)
+                    .hint_text("folder to search")
+                    .desired_width(130.0),
+            );
+            let folder = PathBuf::from(self.relink_folder.trim());
+            if ui
+                .add_enabled(
+                    !self.relink_folder.trim().is_empty(),
+                    egui::Button::new("Relink"),
+                )
+                .on_hover_text("Find missing files by name in this folder (one undo step)")
+                .clicked()
+            {
+                let found = om_engine::relink::find(
+                    self.session.project(),
+                    self.session.project_dir(),
+                    &folder,
+                );
+                match om_engine::relink::command(&found) {
+                    Some(cmd) => {
+                        self.queue(cmd);
+                        self.info(format!(
+                            "Relinked {} of {missing} missing media",
+                            found.len()
+                        ));
+                        self.missing_media = None;
+                    }
+                    None => self.error(format!("No missing media found in {}", folder.display())),
+                }
+            }
+        });
+    }
+
     fn media_list(&mut self, ui: &mut egui::Ui) {
         ui.heading("Media");
+        self.relink_controls(ui);
         ui.horizontal(|ui| {
             for (label, pattern) in [
                 ("+ UV grid", PatternKind::UvGrid),
@@ -406,6 +463,7 @@ impl OpenMapperApp {
                             name: label.trim_start_matches("+ ").to_owned(),
                             source: MediaSource::Pattern { pattern },
                             playback: Default::default(),
+                            plugins: Vec::new(),
                             extensions: Default::default(),
                         },
                         index: None,
@@ -435,6 +493,7 @@ impl OpenMapperApp {
                         name,
                         source: source_for_path(&chosen, stored),
                         playback: Default::default(),
+                        plugins: Vec::new(),
                         extensions: Default::default(),
                     },
                     index: None,
@@ -507,6 +566,7 @@ impl OpenMapperApp {
                         });
                 }
             }
+            self.media_plugin_controls(ui, &m);
             if m.source.is_time_based() {
                 ui.horizontal(|ui| {
                     ui.add_space(14.0);
