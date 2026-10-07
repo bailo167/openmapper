@@ -84,6 +84,32 @@ impl Homography {
         Ok(hom)
     }
 
+    /// Least-squares fit that repeatedly drops pairs mapped further than
+    /// `threshold` from their target (decoding outliers), then refits.
+    pub fn fit_robust(
+        src: &[(f64, f64)],
+        dst: &[(f64, f64)],
+        threshold: f64,
+    ) -> Result<Self, CalibrationError> {
+        let mut h = Self::fit(src, dst)?;
+        for _ in 0..4 {
+            let (s, d): (Vec<_>, Vec<_>) = src
+                .iter()
+                .zip(dst)
+                .filter(|(a, b)| {
+                    h.apply(**a)
+                        .is_some_and(|p| (p.0 - b.0).hypot(p.1 - b.1) <= threshold)
+                })
+                .map(|(a, b)| (*a, *b))
+                .unzip();
+            if s.len() < 4 {
+                break;
+            }
+            h = Self::fit(&s, &d)?;
+        }
+        Ok(h)
+    }
+
     /// Root-mean-square distance between mapped `src` and `dst`.
     #[must_use]
     pub fn rms_error(&self, src: &[(f64, f64)], dst: &[(f64, f64)]) -> f64 {

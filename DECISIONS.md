@@ -265,6 +265,10 @@ point sets are refused with a clear message rather than calibrated
 wrongly. The maths lives in a new `om-calibration` crate (layer 2), which
 `om-render` may use (same-layer edge allowed). Measured points and the
 fitted projector are both stored in the project for repeatability.
-**Camera-assisted calibration** (structured light) is deferred until a
-camera is available to verify it, as are click-to-pick in output windows
-and lens distortion.
+**Camera-assisted calibration** is implemented as Gray-code structured
+light (pattern + inverse per bit, so no global threshold is needed),
+decoding to camera ↔ projector correspondences, plus a robust homography
+fit for flat screens. It is verified with a synthetic camera; physical
+verification waits for a camera. Driving the camera from the app,
+camera-based 3-D calibration, click-to-pick in output windows and lens
+distortion come later.

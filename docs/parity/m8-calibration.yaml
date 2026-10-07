@@ -22,9 +22,9 @@
   tests: [plane_matches_the_ray_cast_reference, nearer_surfaces_hide_farther_ones, calibrated_render_matches_the_true_projector, uncalibrated_or_missing_models_show_black, parses_quads_negative_indices_and_comments, malformed_files_are_errors_with_line_numbers]
 - feature: calibration.camera-assisted
   priority: P1
-  status: deferred
-  tests: []
-  notes: DECISIONS.md D-025 — needs a camera for verification.
+  status: implemented-unverified
+  tests: [gray_codes_round_trip_and_neighbours_differ_by_one_bit, decoding_the_patterns_themselves_recovers_every_pixel, decoded_correspondences_recover_the_camera_to_projector_map, patterns_decode_to_the_identity]
+  notes: Structured light verified with a synthetic camera; physical camera test pending.
 - feature: calibration.physical-projector
   priority: P0
   status: implemented-unverified

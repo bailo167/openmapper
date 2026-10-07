@@ -99,10 +99,35 @@ reproduces every projected pixel bit for bit.
   openmapper-cli calibrate show.omproj --output "Stage" --size 1920x1080
   ```
 
+## Camera-assisted calibration (structured light)
+
+A fixed camera photographs the projector showing a **Gray-code sequence**:
+each column bit and row bit as a pattern plus its inverse, 2·(⌈log₂W⌉ +
+⌈log₂H⌉) images (44 for 1920×1080). Each camera pixel's bit is whichever
+of the pair is brighter. This is robust to surface colour, ambient light
+and exposure. Pixels where any pair differs by less than `min_contrast`
+(shadows, outside the projection) stay undecoded. The result is a
+projector pixel for every decoded camera pixel. For a flat screen, a
+robust homography fit (least squares, then repeatedly dropping pairs off
+by more than 2 px) gives the camera → projector map.
+
+```
+openmapper-cli structured-light patterns --size 1920x1080 --out patterns/
+# show each PNG fullscreen on the projector and photograph it with a fixed camera
+openmapper-cli structured-light decode --size 1920x1080 photos/ --out pairs.json
+```
+
+`pairs.json` holds the correspondences and the fitted homography.
+Verified synthetically: a perspective camera with uneven reflectance,
+ambient light and noise; over 95 % of visible pixels decode within 1 px,
+nothing outside the projection decodes, and the fitted map is within
+0.75 px everywhere. **The physical camera test is pending.**
+
 ## Not yet
 
-- **Camera-assisted calibration** (structured light): needs a camera for
-  verification; see DECISIONS.md D-025.
+- Driving the camera from OpenMapper (patterns and capture are manual
+  steps for now), and turning decoded pairs into a 3-D calibration via a
+  calibrated camera.
 - Picking calibration pixels by clicking in the output window (points are
   typed or imported for now).
 - Lens distortion, and soft edges for 3-D outputs.

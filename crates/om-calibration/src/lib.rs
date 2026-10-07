@@ -7,6 +7,7 @@ pub mod blend;
 pub mod homography;
 pub mod linalg;
 pub mod projector;
+pub mod structured_light;
 
 pub use homography::Homography;
 pub use projector::{Calibration, Intrinsics, Pose, Projector, calibrate, calibrate_projection};

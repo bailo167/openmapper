@@ -81,6 +81,11 @@ enum Action {
         #[arg(long, default_value = "1920x1080")]
         size: String,
     },
+    /// Camera-assisted calibration with Gray-code structured light.
+    StructuredLight {
+        #[command(subcommand)]
+        action: LightAction,
+    },
     /// Show FFmpeg version and licence profile of the loaded libraries.
     Ffmpeg,
     /// List connected displays (index order used by outputs).
@@ -103,6 +108,34 @@ enum Action {
     Dmx {
         #[command(subcommand)]
         action: DmxAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum LightAction {
+    /// Write the pattern sequence as numbered PNGs to show fullscreen on
+    /// the projector, photographing each with a fixed camera.
+    Patterns {
+        /// Projector resolution, e.g. 1920x1080.
+        #[arg(long)]
+        size: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Decode photographs (sorted by file name, same order as the
+    /// patterns) into camera ↔ projector correspondences (JSON) and a
+    /// fitted camera → projector homography.
+    Decode {
+        /// Projector resolution the patterns were made for.
+        #[arg(long)]
+        size: String,
+        /// Folder of photographs.
+        dir: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        /// Minimum brightness difference between a pattern and its inverse.
+        #[arg(long, default_value_t = 12)]
+        min_contrast: u8,
     },
 }
 
@@ -274,6 +307,7 @@ fn run(cli: Cli) -> Result<(), String> {
         Action::Soak { path, seconds } => soak(&path, seconds),
         Action::Live { action } => live(action),
         Action::Dmx { action } => dmx(action),
+        Action::StructuredLight { action } => structured_light(action),
     }
 }
 
@@ -602,6 +636,78 @@ fn dmx_frame(path: &Path, at: f64, json: bool) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn structured_light(action: LightAction) -> Result<(), String> {
+    use om_calibration::structured_light as sl;
+    match action {
+        LightAction::Patterns { size, out } => {
+            let (w, h) = parse_size(&size)?;
+            fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
+            let seq = sl::sequence(w, h);
+            for (i, kind) in seq.iter().enumerate() {
+                let g = sl::render(*kind, w, h);
+                let path = out.join(format!("{:03}.png", i + 1));
+                image::save_buffer(&path, &g.pixels, w, h, image::ExtendedColorType::L8)
+                    .map_err(|e| format!("{}: {e}", path.display()))?;
+            }
+            println!("wrote {} patterns to {}", seq.len(), out.display());
+            Ok(())
+        }
+        LightAction::Decode {
+            size,
+            dir,
+            out,
+            min_contrast,
+        } => {
+            let (w, h) = parse_size(&size)?;
+            let mut files: Vec<PathBuf> = fs::read_dir(&dir)
+                .map_err(|e| format!("{}: {e}", dir.display()))?
+                .filter_map(Result::ok)
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+                        matches!(
+                            e.to_ascii_lowercase().as_str(),
+                            "png" | "jpg" | "jpeg" | "tif" | "tiff"
+                        )
+                    })
+                })
+                .collect();
+            files.sort();
+            let mut captures = Vec::with_capacity(files.len());
+            for f in &files {
+                let img = image::open(f)
+                    .map_err(|e| format!("{}: {e}", f.display()))?
+                    .to_luma8();
+                captures.push(sl::Gray {
+                    width: img.width(),
+                    height: img.height(),
+                    pixels: img.into_raw(),
+                });
+            }
+            let decoded = sl::decode(&captures, w, h, min_contrast).map_err(|e| e.to_string())?;
+            let pairs = decoded.pairs();
+            #[allow(clippy::cast_precision_loss)]
+            let coverage = pairs.len() as f64 / decoded.map.len().max(1) as f64 * 100.0;
+            let (cam, proj): (Vec<_>, Vec<_>) = pairs.iter().copied().unzip();
+            let fit = om_calibration::Homography::fit_robust(&cam, &proj, 2.0).ok();
+            let json = serde_json::json!({
+                "projector": [w, h],
+                "camera": [decoded.width, decoded.height],
+                "camera_to_projector": fit.map(|h| h.0),
+                "rms_px": fit.map(|h| h.rms_error(&cam, &proj)),
+                "pairs": pairs.iter().map(|(c, p)| [c.0, c.1, p.0, p.1]).collect::<Vec<_>>(),
+            });
+            fs::write(&out, json.to_string()).map_err(|e| format!("{}: {e}", out.display()))?;
+            println!(
+                "decoded {} camera pixels ({coverage:.1}% of the image) -> {}",
+                pairs.len(),
+                out.display()
+            );
+            Ok(())
+        }
+    }
 }
 
 fn parse_size(s: &str) -> Result<(u32, u32), String> {
