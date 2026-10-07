@@ -14,8 +14,9 @@ pub mod store;
 
 pub use migrate::{CURRENT_VERSION, FORMAT};
 pub use schema::{
-    BlendMode, Canvas, DisplayTarget, Extensions, MAX_MESH_DIVISIONS, Media, MediaSource, Output,
-    PatternKind, Playback, Project, Shape, Show, Surface, Timebase, line_quad,
+    BlendMode, Canvas, DisplayTarget, Extensions, MAX_MASK_POINTS, MAX_MESH_DIVISIONS, Mask,
+    MaskPoint, Media, MediaSource, Output, PatternKind, Playback, Project, Shape, Show, Surface,
+    Timebase, line_quad,
 };
 
 use std::collections::HashSet;
@@ -122,6 +123,9 @@ impl Project {
             }
             if let Err(e) = s.shape.validate() {
                 return invalid(format!("surface {}: {e}", s.id));
+            }
+            if let Some(Err(e)) = s.mask.as_ref().map(Mask::validate) {
+                return invalid(format!("surface {} mask: {e}", s.id));
             }
         }
         let mut media_ids = HashSet::new();

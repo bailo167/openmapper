@@ -56,7 +56,21 @@ pub struct DrawItem {
     pub clip: Clip,
     pub opacity: f32,
     pub blend: BlendMode,
+    /// The surface's mask, flattened, if it has one (shared by its items).
+    pub mask: Option<std::sync::Arc<MaskShape>>,
 }
+
+/// A mask ready to rasterise: polygon in canvas space plus edge settings.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MaskShape {
+    pub polygon: Vec<(f64, f64)>,
+    /// Feather width as a fraction of canvas height.
+    pub feather: f64,
+    pub invert: bool,
+}
+
+/// Maximum flattened mask vertices (matches the GPU uniform array).
+pub const MAX_MASK_VERTICES: usize = 1024;
 
 /// Why a surface was not drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,6 +212,21 @@ pub fn plan(project: &Project, is_loaded: impl Fn(MediaId) -> bool) -> RenderPla
             }
             _ => Clip::None,
         };
+        let mask = s.mask.as_ref().map(|m| {
+            // Quarter-pixel chord tolerance, coarsened if the curve would
+            // exceed the GPU vertex budget.
+            let mut tol = 0.25 / f64::from(project.canvas.height.max(1));
+            let mut polygon = m.flatten(tol, aspect);
+            while polygon.len() > MAX_MASK_VERTICES {
+                tol *= 2.0;
+                polygon = m.flatten(tol, aspect);
+            }
+            std::sync::Arc::new(MaskShape {
+                polygon,
+                feather: m.feather.get(),
+                invert: m.invert,
+            })
+        });
         let parts = pieces(&s.shape, aspect);
         let total = parts.len();
         let mut failed = 0u32;
@@ -220,6 +249,7 @@ pub fn plan(project: &Project, is_loaded: impl Fn(MediaId) -> bool) -> RenderPla
                     #[allow(clippy::cast_possible_truncation)]
                     opacity: s.opacity.get() as f32,
                     blend: s.blend,
+                    mask: mask.clone(),
                 }),
                 Err(e) => {
                     failed += 1;

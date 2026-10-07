@@ -185,3 +185,51 @@ proptest! {
         prop_assert_eq!(back.to_canonical_json().unwrap(), text);
     }
 }
+
+#[test]
+fn mask_flattening() {
+    use crate::{Mask, MaskPoint};
+    let pt = |x: f64, y: f64, smooth: bool| MaskPoint {
+        p: om_geom::Point2::new(x, y).unwrap(),
+        smooth,
+    };
+    let corners = Mask {
+        points: vec![
+            pt(0.1, 0.1, false),
+            pt(0.9, 0.1, false),
+            pt(0.5, 0.9, false),
+        ],
+        feather: om_types::Finite::ZERO,
+        invert: false,
+    };
+    assert_eq!(
+        corners.flatten(0.001, 1.0),
+        vec![(0.1, 0.1), (0.9, 0.1), (0.5, 0.9)]
+    );
+    // All-smooth square becomes a rounded closed curve through its points.
+    let round = Mask {
+        points: vec![
+            pt(0.2, 0.2, true),
+            pt(0.8, 0.2, true),
+            pt(0.8, 0.8, true),
+            pt(0.2, 0.8, true),
+        ],
+        feather: om_types::Finite::ZERO,
+        invert: false,
+    };
+    let poly = round.flatten(0.0005, 1.0);
+    assert!(poly.len() > 20, "curves are subdivided: {}", poly.len());
+    for p in [(0.2, 0.2), (0.8, 0.2), (0.8, 0.8), (0.2, 0.8)] {
+        assert!(poly.contains(&p), "passes through control point {p:?}");
+    }
+    // Finer tolerance never gives fewer points.
+    assert!(round.flatten(0.0001, 1.0).len() >= poly.len());
+    assert!(
+        Mask {
+            points: vec![pt(0.0, 0.0, false); 2],
+            ..corners.clone()
+        }
+        .validate()
+        .is_err()
+    );
+}

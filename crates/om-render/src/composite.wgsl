@@ -15,11 +15,14 @@ struct Item {
     // 0 projective; 1 projective + ellipse clip (l0..l2 = canvas->local);
     // 2 bilinear patch (c0 = P00 P10, c1 = P11 P01, l0/l1 = their UVs).
     params: vec4<f32>,
+    // x: 1 if the surface has a mask (sampled from mask_tex).
+    extra: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> item: Item;
 @group(1) @binding(0) var media: texture_2d<f32>;
 @group(1) @binding(1) var media_sampler: sampler;
+@group(2) @binding(0) var mask_tex: texture_2d<f32>;
 
 @vertex
 fn vs_main(@location(0) pos: vec2<f32>) -> @builtin(position) vec4<f32> {
@@ -60,6 +63,13 @@ fn inverse_bilinear(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, c: vec2<f32>, d: v
     return vec4<f32>(0.0, 0.0, 0.0, 0.0);
 }
 
+fn mask_at(frag: vec4<f32>) -> f32 {
+    if item.extra.x < 0.5 {
+        return 1.0;
+    }
+    return textureLoad(mask_tex, vec2<i32>(frag.xy), 0).r;
+}
+
 @fragment
 fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let p = vec3<f32>(frag.x / item.params.y, frag.y / item.params.z, 1.0);
@@ -71,7 +81,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         let top = mix(item.l0.xy, item.l0.zw, st.x);
         let bottom = mix(item.l1.zw, item.l1.xy, st.x);
         let uv = mix(top, bottom, st.y);
-        return textureSampleLevel(media, media_sampler, uv, 0.0) * item.params.x;
+        return textureSampleLevel(media, media_sampler, uv, 0.0) * item.params.x * mask_at(frag);
     }
     if item.params.w > 0.5 {
         let l = mat3x3<f32>(item.l0.xyz, item.l1.xyz, item.l2.xyz) * p;
@@ -85,5 +95,5 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let uv = q.xy / q.z;
     // Media textures are already linear and premultiplied.
     let c = textureSampleLevel(media, media_sampler, uv, 0.0);
-    return c * item.params.x;
+    return c * item.params.x * mask_at(frag);
 }

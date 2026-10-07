@@ -17,7 +17,8 @@ use om_engine::{OpenReport, Session, Transport, path_for_storage};
 use om_media_core::{AudioOpener, VideoOpener};
 use om_output::Display;
 use om_project::{
-    BlendMode, Canvas, Media, MediaSource, Output, PatternKind, Playback, Shape, Surface,
+    BlendMode, Canvas, MAX_MASK_POINTS, Mask, MaskPoint, Media, MediaSource, Output, PatternKind,
+    Playback, Shape, Surface,
 };
 use om_time::{Rate, RationalTime, Speed};
 use om_types::{MediaId, OutputId, SurfaceId, UnitInterval};
@@ -41,6 +42,8 @@ pub struct OpenMapperApp {
     rename_buffer: Option<(SurfaceId, String)>,
     project_name_buffer: Option<String>,
     drag: Option<Drag>,
+    /// Canvas handles edit the selected surface's mask instead of its shape.
+    mask_mode: bool,
     displays: Vec<Display>,
     display_error: Option<String>,
     last_poll: Option<Instant>,
@@ -86,6 +89,7 @@ impl OpenMapperApp {
             pending: Vec::new(),
             end_coalescing: false,
             transport: Transport::default(),
+            mask_mode: false,
         };
         if app.viewer.is_none() {
             app.error("No GPU renderer available; the canvas cannot be shown.");
@@ -770,6 +774,7 @@ impl OpenMapperApp {
                 self.end_coalescing = true;
             }
         }
+        self.mask_controls(ui, &surface);
         egui::ComboBox::from_label("Blend")
             .selected_text(format!("{:?}", surface.blend))
             .show_ui(ui, |ui| {
@@ -795,6 +800,118 @@ impl OpenMapperApp {
             self.queue(Command::RemoveSurface { id });
             self.selected = None;
         }
+    }
+
+    fn mask_controls(&mut self, ui: &mut egui::Ui, surface: &Surface) {
+        let id = surface.id;
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label("Mask");
+            match &surface.mask {
+                None => {
+                    if ui.small_button("Add").clicked() {
+                        let aspect = f64::from(self.session.project().canvas.width)
+                            / f64::from(self.session.project().canvas.height.max(1));
+                        let mask = Mask::around(&surface.shape.outline(aspect));
+                        self.queue(Command::SetSurfaceMask {
+                            id,
+                            mask: Some(mask),
+                        });
+                        self.mask_mode = true;
+                    }
+                }
+                Some(_) => {
+                    ui.selectable_value(&mut self.mask_mode, false, "Edit shape");
+                    ui.selectable_value(&mut self.mask_mode, true, "Edit mask");
+                    if ui.small_button("Remove").clicked() {
+                        self.queue(Command::SetSurfaceMask { id, mask: None });
+                        self.mask_mode = false;
+                    }
+                }
+            }
+        });
+        let Some(mask) = surface.mask.clone() else {
+            return;
+        };
+        let mut edited = mask.clone();
+        let mut feather = mask.feather.get() * 100.0;
+        let resp = ui.add(egui::Slider::new(&mut feather, 0.0..=20.0).text("Feather % of height"));
+        if resp.changed() {
+            edited.feather = om_types::Finite::new(feather / 100.0).unwrap_or(mask.feather);
+            self.queue_coalescing(
+                Command::SetSurfaceMask {
+                    id,
+                    mask: Some(edited.clone()),
+                },
+                format!("feather:{id}"),
+            );
+        }
+        if resp.drag_stopped() || resp.lost_focus() {
+            self.end_coalescing = true;
+        }
+        ui.horizontal(|ui| {
+            let mut invert = mask.invert;
+            if ui.checkbox(&mut invert, "Invert").changed() {
+                self.queue(Command::SetSurfaceMask {
+                    id,
+                    mask: Some(Mask {
+                        invert,
+                        ..mask.clone()
+                    }),
+                });
+            }
+            let all_smooth = mask.points.iter().all(|p| p.smooth);
+            let mut smooth = all_smooth;
+            if ui.checkbox(&mut smooth, "Smooth").changed() {
+                let mut m = mask.clone();
+                for p in &mut m.points {
+                    p.smooth = smooth;
+                }
+                self.queue(Command::SetSurfaceMask { id, mask: Some(m) });
+            }
+        });
+        ui.horizontal(|ui| {
+            if ui.small_button("+ point").clicked() && mask.points.len() < MAX_MASK_POINTS {
+                // Split the longest edge.
+                let n = mask.points.len();
+                let longest = (0..n)
+                    .max_by(|&a, &b| {
+                        let len = |i: usize| {
+                            let (p, q) = (mask.points[i].p, mask.points[(i + 1) % n].p);
+                            (q.x() - p.x()).hypot(q.y() - p.y())
+                        };
+                        len(a).total_cmp(&len(b))
+                    })
+                    .unwrap_or(0);
+                let (p, q) = (mask.points[longest].p, mask.points[(longest + 1) % n].p);
+                let mid =
+                    om_geom::Point2::new((p.x() + q.x()) / 2.0, (p.y() + q.y()) / 2.0).unwrap_or(p);
+                let mut m = mask.clone();
+                m.points.insert(
+                    longest + 1,
+                    MaskPoint {
+                        p: mid,
+                        smooth: mask.points[longest].smooth,
+                    },
+                );
+                self.queue(Command::SetSurfaceMask { id, mask: Some(m) });
+            }
+            if ui
+                .add_enabled(mask.points.len() > 3, egui::Button::new("− point").small())
+                .clicked()
+            {
+                let mut m = mask.clone();
+                let i = match &self.drag {
+                    Some(Drag {
+                        kind: canvas::DragKind::MaskPoint(i),
+                        ..
+                    }) => *i,
+                    _ => m.points.len() - 1,
+                };
+                m.points.remove(i.min(m.points.len() - 1));
+                self.queue(Command::SetSurfaceMask { id, mask: Some(m) });
+            }
+        });
     }
 
     fn canvas_view(&mut self, ui: &mut egui::Ui) {
@@ -869,7 +986,45 @@ impl OpenMapperApp {
                 &s.shape,
                 Stroke::new(1.0, colour.gamma_multiply(0.6)),
             );
-            if selected {
+            if let Some(m) = &s.mask {
+                let aspect = f64::from(rect.width() / rect.height().max(1.0));
+                let tol = 1.0 / f64::from(rect.height().max(1.0));
+                let path: Vec<Pos2> = m
+                    .flatten(tol, aspect)
+                    .into_iter()
+                    .filter_map(|(x, y)| {
+                        om_geom::Point2::new(x, y).ok().map(|p| to_screen(rect, p))
+                    })
+                    .collect();
+                let mask_colour = Color32::from_rgb(80, 200, 255);
+                painter.add(egui::Shape::dashed_line(
+                    &[path.clone(), path.first().copied().into_iter().collect()].concat(),
+                    Stroke::new(1.2, mask_colour),
+                    6.0,
+                    4.0,
+                ));
+                if selected && self.mask_mode {
+                    for mp in &m.points {
+                        let c = to_screen(rect, mp.p);
+                        if mp.smooth {
+                            painter.circle(
+                                c,
+                                5.0,
+                                Color32::from_black_alpha(160),
+                                Stroke::new(1.5, mask_colour),
+                            );
+                        } else {
+                            painter.rect_stroke(
+                                egui::Rect::from_center_size(c, egui::vec2(9.0, 9.0)),
+                                0.0,
+                                Stroke::new(1.5, mask_colour),
+                                egui::StrokeKind::Middle,
+                            );
+                        }
+                    }
+                }
+            }
+            if selected && !self.mask_mode {
                 for (i, p) in pts.iter().enumerate() {
                     painter.circle(
                         *p,
@@ -891,19 +1046,45 @@ impl OpenMapperApp {
         if response.drag_started()
             && let Some(pos) = response.interact_pointer_pos()
         {
-            self.drag = begin_drag(project, rect, self.selected, pos);
+            self.drag = begin_drag(project, rect, self.selected, pos, self.mask_mode);
             if let Some(d) = &self.drag {
                 self.selected = Some(d.surface);
             }
         }
         if response.clicked()
             && let Some(pos) = response.interact_pointer_pos()
+            && !self.mask_mode
         {
-            self.selected = begin_drag(project, rect, self.selected, pos).map(|d| d.surface);
+            self.selected = begin_drag(project, rect, self.selected, pos, false).map(|d| d.surface);
         }
         if let (Some(drag), Some(pos)) = (self.drag.clone(), response.interact_pointer_pos())
             && response.dragged()
-            && let Some(current) = project.surface(drag.surface).map(|s| s.shape.clone())
+            && let canvas::DragKind::MaskPoint(i) = drag.kind
+            && let Some(mut mask) = self
+                .session
+                .project()
+                .surface(drag.surface)
+                .and_then(|s| s.mask.clone())
+            && let Some(p) = canvas::to_canvas(rect, pos)
+            && let Some(point) = mask.points.get_mut(i)
+            && point.p != p
+        {
+            point.p = p;
+            self.queue_coalescing(
+                Command::SetSurfaceMask {
+                    id: drag.surface,
+                    mask: Some(mask),
+                },
+                format!("mask:{}", drag.surface),
+            );
+        }
+        if let (Some(drag), Some(pos)) = (self.drag.clone(), response.interact_pointer_pos())
+            && response.dragged()
+            && let Some(current) = self
+                .session
+                .project()
+                .surface(drag.surface)
+                .map(|s| s.shape.clone())
             && let Some(shape) = dragged_shape(rect, &current, &drag, pos)
             && shape != current
         {

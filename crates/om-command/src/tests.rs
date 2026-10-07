@@ -210,6 +210,28 @@ fn arb_new_command() -> impl Strategy<Value = Command> {
             ])
         )
             .prop_map(|(id, blend)| Command::SetSurfaceBlend { id, blend }),
+        (
+            sid_s.clone(),
+            proptest::option::of((
+                proptest::collection::vec(((0.0f64..1.0, 0.0f64..1.0), any::<bool>()), 0..8),
+                0.0f64..0.1,
+                any::<bool>()
+            ))
+        )
+            .prop_map(|(id, m)| Command::SetSurfaceMask {
+                id,
+                mask: m.map(|(pts, feather, invert)| om_project::Mask {
+                    points: pts
+                        .into_iter()
+                        .map(|((x, y), smooth)| om_project::MaskPoint {
+                            p: Point2::new(x, y).unwrap(),
+                            smooth
+                        })
+                        .collect(),
+                    feather: om_types::Finite::new(feather).unwrap(),
+                    invert,
+                }),
+            }),
         (sid_s, proptest::option::of(mid.clone()))
             .prop_map(|(id, media)| Command::SetSurfaceMedia { id, media }),
         (mid.clone(), proptest::option::of(0usize..4)).prop_map(|(id, index)| Command::AddMedia {

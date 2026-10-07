@@ -49,6 +49,7 @@ pub struct ResourceCounts {
     pub uniform_bytes: u64,
     pub vertex_bytes: u64,
     pub blit_pipelines: usize,
+    pub mask_textures: usize,
 }
 
 #[repr(C)]
@@ -61,7 +62,23 @@ struct ItemUniform {
     l1: [f32; 4],
     l2: [f32; 4],
     params: [f32; 4],
+    extra: [f32; 4],
 }
+
+/// A surface's rasterised mask (canvas-sized coverage texture).
+struct GpuMask {
+    key: u64,
+    size: (u32, u32),
+    _texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    bind_group: wgpu::BindGroup,
+    uniform: wgpu::Buffer,
+    uniform_bind: wgpu::BindGroup,
+}
+
+const MASK_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R16Float;
+/// Mask uniform: params vec4 + 512 vec4 of points.
+const MASK_UNIFORM_SIZE: u64 = 16 + 512 * 16;
 
 struct GpuImage {
     texture: wgpu::Texture,
@@ -93,6 +110,12 @@ pub struct Compositor {
     vertices: Option<(wgpu::Buffer, u64)>,
     images: HashMap<MediaId, GpuImage>,
     canvas: Option<Canvas>,
+    mask_layout: wgpu::BindGroupLayout,
+    mask_gen_layout: wgpu::BindGroupLayout,
+    mask_gen_pipeline: wgpu::RenderPipeline,
+    /// Bound for unmasked items (never sampled).
+    no_mask: (wgpu::Texture, wgpu::BindGroup),
+    masks: HashMap<om_types::SurfaceId, GpuMask>,
 }
 
 impl std::fmt::Debug for Compositor {
@@ -124,9 +147,91 @@ impl Compositor {
             }],
         });
         let media_layout = texture_layout(device, "om media");
+        let mask_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("om mask"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            }],
+        });
+        let mask_gen_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("om mask gen"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(MASK_UNIFORM_SIZE),
+                },
+                count: None,
+            }],
+        });
+        let mask_module = device.create_shader_module(wgpu::include_wgsl!("mask.wgsl"));
+        let mask_gen_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("om mask gen"),
+                bind_group_layouts: &[Some(&mask_gen_layout)],
+                immediate_size: 0,
+            });
+        let mask_gen_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("om mask gen"),
+            layout: Some(&mask_gen_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &mask_module,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &mask_module,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: MASK_FORMAT,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let no_mask_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("om no mask"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: MASK_FORMAT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let no_mask_view = no_mask_tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let no_mask_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("om no mask"),
+            layout: &mask_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&no_mask_view),
+            }],
+        });
+        let no_mask = (no_mask_tex, no_mask_bind);
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("om composite"),
-            bind_group_layouts: &[Some(&item_layout), Some(&media_layout)],
+            bind_group_layouts: &[Some(&item_layout), Some(&media_layout), Some(&mask_layout)],
             immediate_size: 0,
         });
         let make = |blend: BlendMode| {
@@ -206,6 +311,11 @@ impl Compositor {
             vertices: None,
             images: HashMap::new(),
             canvas: None,
+            mask_layout,
+            mask_gen_layout,
+            mask_gen_pipeline,
+            no_mask,
+            masks: HashMap::new(),
         }
     }
 
@@ -314,6 +424,14 @@ impl Compositor {
         }
         self.ensure_canvas(size);
         let frame_plan = plan(project, |m| self.images.contains_key(&m));
+        let mut mask_encoder =
+            self.gpu
+                .device()
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("om masks"),
+                });
+        self.update_masks(&frame_plan, size, &mut mask_encoder);
+        self.gpu.queue().submit([mask_encoder.finish()]);
 
         // Geometry: triangle fans flattened into a list; one uniform per item.
         let mut verts: Vec<f32> = Vec::new();
@@ -357,6 +475,7 @@ impl Compositor {
                 l1,
                 l2,
                 params: [item.opacity, size.0 as f32, size.1 as f32, clip_kind],
+                extra: [if item.mask.is_some() { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
             };
             let mut block = vec![0u8; self.uniform_stride as usize];
             block[..std::mem::size_of::<ItemUniform>()].copy_from_slice(bytemuck::bytes_of(&u));
@@ -409,6 +528,12 @@ impl Compositor {
                     let offset = (i as u64 * self.uniform_stride) as u32;
                     pass.set_bind_group(0, ubind, &[offset]);
                     pass.set_bind_group(1, &img.bind_group, &[]);
+                    let mask_bind = self
+                        .masks
+                        .get(&item.surface)
+                        .filter(|_| item.mask.is_some())
+                        .map_or(&self.no_mask.1, |m| &m.bind_group);
+                    pass.set_bind_group(2, mask_bind, &[]);
                     pass.draw(range.clone(), 0..1);
                 }
             }
@@ -555,6 +680,128 @@ impl Compositor {
             uniform_bytes: self.uniforms.as_ref().map_or(0, |u| u.2),
             vertex_bytes: self.vertices.as_ref().map_or(0, |v| v.1),
             blit_pipelines: self.blit_pipelines.len(),
+            mask_textures: self.masks.len(),
+        }
+    }
+
+    /// Rasterises masks that are new or changed; drops masks no longer used.
+    fn update_masks(
+        &mut self,
+        frame_plan: &RenderPlan,
+        size: (u32, u32),
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
+        use std::hash::{Hash, Hasher};
+        let mut wanted: HashMap<om_types::SurfaceId, &crate::plan::MaskShape> = HashMap::new();
+        for item in &frame_plan.items {
+            if let Some(m) = &item.mask {
+                wanted.insert(item.surface, m);
+            }
+        }
+        self.masks.retain(|id, _| wanted.contains_key(id));
+        for (id, mask) in wanted {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            size.hash(&mut h);
+            mask.invert.hash(&mut h);
+            mask.feather.to_bits().hash(&mut h);
+            for (x, y) in &mask.polygon {
+                x.to_bits().hash(&mut h);
+                y.to_bits().hash(&mut h);
+            }
+            let key = h.finish();
+            if self.masks.get(&id).is_some_and(|m| m.key == key) {
+                continue;
+            }
+            if !self.masks.get(&id).is_some_and(|m| m.size == size) {
+                let m = self.create_mask(size);
+                self.masks.insert(id, m);
+            }
+            let Some(m) = self.masks.get_mut(&id) else {
+                continue;
+            };
+            m.key = key;
+            // Uniform: count, feather (px), invert; then points in pixels.
+            let mut data = vec![0f32; (MASK_UNIFORM_SIZE / 4) as usize];
+            let n = mask.polygon.len().min(crate::plan::MAX_MASK_VERTICES);
+            #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+            {
+                data[0] = n as f32;
+                data[1] = (mask.feather * f64::from(size.1)) as f32;
+                data[2] = if mask.invert { 1.0 } else { 0.0 };
+                for (i, (x, y)) in mask.polygon.iter().take(n).enumerate() {
+                    data[4 + i * 2] = (x * f64::from(size.0)) as f32;
+                    data[4 + i * 2 + 1] = (y * f64::from(size.1)) as f32;
+                }
+            }
+            self.gpu
+                .queue()
+                .write_buffer(&m.uniform, 0, bytemuck::cast_slice(&data));
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("om mask"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &m.view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&self.mask_gen_pipeline);
+            pass.set_bind_group(0, &m.uniform_bind, &[]);
+            pass.draw(0..3, 0..1);
+        }
+    }
+
+    fn create_mask(&self, size: (u32, u32)) -> GpuMask {
+        let device = self.gpu.device();
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("om mask"),
+            size: wgpu::Extent3d {
+                width: size.0,
+                height: size.1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: MASK_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("om mask"),
+            layout: &self.mask_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            }],
+        });
+        let uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("om mask uniform"),
+            size: MASK_UNIFORM_SIZE,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let uniform_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("om mask uniform"),
+            layout: &self.mask_gen_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform.as_entire_binding(),
+            }],
+        });
+        GpuMask {
+            key: 0,
+            size,
+            _texture: texture,
+            view,
+            bind_group,
+            uniform,
+            uniform_bind,
         }
     }
 

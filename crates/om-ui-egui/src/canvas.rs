@@ -14,6 +14,8 @@ pub const HANDLE_RADIUS: f32 = 9.0;
 #[derive(Debug, Clone, PartialEq)]
 pub enum DragKind {
     Corner(usize),
+    /// A mask control point of the selected surface.
+    MaskPoint(usize),
     /// Moving the whole surface; `origin` is the shape when the drag began.
     Body {
         origin: Shape,
@@ -110,7 +112,25 @@ pub fn begin_drag(
     rect: Rect,
     selected: Option<SurfaceId>,
     pos: Pos2,
+    mask_mode: bool,
 ) -> Option<Drag> {
+    if mask_mode
+        && let Some(s) = selected.and_then(|id| project.surface(id))
+        && let Some(m) = &s.mask
+    {
+        // In mask mode only mask points are draggable.
+        return m
+            .points
+            .iter()
+            .enumerate()
+            .map(|(i, mp)| (i, to_screen(rect, mp.p).distance(pos)))
+            .filter(|(_, d)| *d <= HANDLE_RADIUS)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(i, _)| Drag {
+                surface: s.id,
+                kind: DragKind::MaskPoint(i),
+            });
+    }
     if let Some(s) = selected.and_then(|id| project.surface(id))
         && let Some(i) = corner_at(rect, &s.shape, pos)
     {
@@ -138,6 +158,7 @@ pub fn begin_drag(
 pub fn dragged_shape(rect: Rect, current: &Shape, drag: &Drag, pos: Pos2) -> Option<Shape> {
     match &drag.kind {
         DragKind::Corner(i) => Some(current.clone().with_corner(*i, to_canvas(rect, pos)?)),
+        DragKind::MaskPoint(_) => None,
         DragKind::Body { origin, start } => {
             let d = pos - *start;
             origin.clone().translated(
@@ -185,14 +206,14 @@ mod tests {
         let tl = to_screen(r, p.surfaces[0].shape.corners()[0]);
 
         // Corner handles only grab on the selected surface.
-        let d = begin_drag(&p, r, Some(id), tl + Vec2::new(3.0, 3.0)).unwrap();
+        let d = begin_drag(&p, r, Some(id), tl + Vec2::new(3.0, 3.0), false).unwrap();
         assert_eq!(d.kind, DragKind::Corner(0));
         let moved = dragged_shape(r, &p.surfaces[0].shape, &d, Pos2::new(100.0, 50.0)).unwrap();
         assert_eq!(moved.corners()[0].to_tuple(), (0.0, 0.0));
 
         // Pressing inside an unselected surface grabs its body.
         let centre = Pos2::new(300.0, 150.0);
-        let d = begin_drag(&p, r, None, centre).unwrap();
+        let d = begin_drag(&p, r, None, centre, false).unwrap();
         assert!(matches!(d.kind, DragKind::Body { .. }));
         let moved =
             dragged_shape(r, &p.surfaces[0].shape, &d, centre + Vec2::new(40.0, 20.0)).unwrap();
@@ -202,6 +223,6 @@ mod tests {
             "{c0:?}"
         );
 
-        assert!(begin_drag(&p, r, None, Pos2::new(105.0, 55.0)).is_none());
+        assert!(begin_drag(&p, r, None, Pos2::new(105.0, 55.0), false).is_none());
     }
 }

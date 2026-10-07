@@ -178,6 +178,9 @@ pub struct Surface {
     pub shape: Shape,
     #[serde(default)]
     pub blend: BlendMode,
+    /// Optional mask limiting where the surface is visible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mask: Option<Mask>,
     /// Media shown on this surface; `None` renders nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media: Option<MediaId>,
@@ -195,6 +198,7 @@ impl Surface {
             opacity: UnitInterval::ONE,
             shape: Shape::default(),
             blend: BlendMode::Normal,
+            mask: None,
             media: None,
             extensions: Extensions::new(),
         }
@@ -238,6 +242,117 @@ pub enum Shape {
         width: Finite,
         uv: [Point2; 4],
     },
+}
+
+/// A closed mask path in canvas space. Each point is a corner or a smooth
+/// point; runs of smooth points form a Catmull-Rom curve (converted to cubic
+/// Béziers and flattened by the renderer).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Mask {
+    pub points: Vec<MaskPoint>,
+    /// Soft-edge width as a fraction of the canvas height (0 = hard edge).
+    #[serde(default)]
+    pub feather: Finite,
+    /// Show the surface only outside the path.
+    #[serde(default)]
+    pub invert: bool,
+}
+
+/// One mask control point.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MaskPoint {
+    pub p: Point2,
+    #[serde(default)]
+    pub smooth: bool,
+}
+
+/// Largest number of mask control points.
+pub const MAX_MASK_POINTS: usize = 128;
+
+impl Mask {
+    /// A rectangular mask (corner points) around the given outline's bounds.
+    #[must_use]
+    pub fn around(outline: &[Point2]) -> Self {
+        let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+        for p in outline {
+            x0 = x0.min(p.x());
+            y0 = y0.min(p.y());
+            x1 = x1.max(p.x());
+            y1 = y1.max(p.y());
+        }
+        if x0 > x1 {
+            (x0, y0, x1, y1) = (0.25, 0.25, 0.75, 0.75);
+        }
+        let pt = |x: f64, y: f64| MaskPoint {
+            p: Point2::new(x, y).unwrap_or_default(),
+            smooth: false,
+        };
+        Self {
+            points: vec![pt(x0, y0), pt(x1, y0), pt(x1, y1), pt(x0, y1)],
+            feather: Finite::ZERO,
+            invert: false,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.points.len() < 3 || self.points.len() > MAX_MASK_POINTS {
+            return Err(format!(
+                "mask has {} points; needs 3..={MAX_MASK_POINTS}",
+                self.points.len()
+            ));
+        }
+        if self.feather.get() < 0.0 {
+            return Err("mask feather is negative".into());
+        }
+        Ok(())
+    }
+
+    /// The closed path flattened to a polygon. `tolerance` is the maximum
+    /// chord error in canvas-height units; `aspect` is width / height.
+    #[must_use]
+    pub fn flatten(&self, tolerance: f64, aspect: f64) -> Vec<(f64, f64)> {
+        let n = self.points.len();
+        let mut out = Vec::new();
+        if n < 3 {
+            return out;
+        }
+        let pos = |i: usize| self.points[i % n].p.to_tuple();
+        for i in 0..n {
+            let (a, b) = (self.points[i], self.points[(i + 1) % n]);
+            out.push(a.p.to_tuple());
+            if !a.smooth && !b.smooth {
+                continue;
+            }
+            // Catmull-Rom tangents (zero at corners) to Bézier handles.
+            let tangent = |k: usize, smooth: bool| {
+                if !smooth {
+                    return (0.0, 0.0);
+                }
+                let (p0, p2) = (pos(k + n - 1), pos(k + 1));
+                ((p2.0 - p0.0) / 6.0, (p2.1 - p0.1) / 6.0)
+            };
+            let (p0, p3) = (a.p.to_tuple(), b.p.to_tuple());
+            let t0 = tangent(i, a.smooth);
+            let t1 = tangent(i + 1, b.smooth);
+            let p1 = (p0.0 + t0.0, p0.1 + t0.1);
+            let p2 = (p3.0 - t1.0, p3.1 - t1.1);
+            // Subdivisions from the control polygon length (in height units).
+            let len = |u: (f64, f64), v: (f64, f64)| ((v.0 - u.0) * aspect).hypot(v.1 - u.1);
+            let control = len(p0, p1) + len(p1, p2) + len(p2, p3);
+            let steps = ((control / tolerance.max(1e-6)).sqrt().ceil() as usize).clamp(1, 64);
+            for s in 1..steps {
+                let t = s as f64 / steps as f64;
+                let mt = 1.0 - t;
+                let c = |a: f64, b: f64, c: f64, d: f64| {
+                    mt * mt * mt * a + 3.0 * mt * mt * t * b + 3.0 * mt * t * t * c + t * t * t * d
+                };
+                out.push((c(p0.0, p1.0, p2.0, p3.0), c(p0.1, p1.1, p2.1, p3.1)));
+            }
+        }
+        out
+    }
 }
 
 /// Largest mesh subdivision per axis.

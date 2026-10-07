@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use om_project::{
-    BlendMode, Canvas, DisplayTarget, Media, Output, Playback, Project, Shape, Surface,
+    BlendMode, Canvas, DisplayTarget, Mask, Media, Output, Playback, Project, Shape, Surface,
 };
 use om_types::{MediaId, OutputId, SurfaceId, UnitInterval};
 use serde::{Deserialize, Serialize};
@@ -47,6 +47,11 @@ pub enum Command {
     SetSurfaceBlend {
         id: SurfaceId,
         blend: BlendMode,
+    },
+    /// Sets (`Some`) or removes (`None`) a surface's mask.
+    SetSurfaceMask {
+        id: SurfaceId,
+        mask: Option<Mask>,
     },
     /// Assigns (`Some`) or clears (`None`) a surface's media.
     SetSurfaceMedia {
@@ -304,6 +309,17 @@ impl Command {
                     events: vec![Event::SurfaceChanged { id: *id }],
                 })
             }
+            Self::SetSurfaceMask { id, mask } => {
+                if let Some(m) = mask {
+                    m.validate().map_err(CommandError::Invalid)?;
+                }
+                let at = surface_index(project, *id)?;
+                let old = std::mem::replace(&mut project.surfaces[at].mask, mask.clone());
+                Ok(Applied {
+                    inverse: Self::SetSurfaceMask { id: *id, mask: old },
+                    events: vec![Event::SurfaceChanged { id: *id }],
+                })
+            }
             Self::SetSurfaceMedia { id, media } => {
                 let at = surface_index(project, *id)?;
                 if let Some(m) = media {
@@ -460,6 +476,7 @@ impl Command {
             Self::MoveSurface { .. } => "Reorder Surfaces",
             Self::SetSurfaceShape { .. } => "Edit Shape",
             Self::SetSurfaceBlend { .. } => "Blend Mode",
+            Self::SetSurfaceMask { .. } => "Edit Mask",
             Self::SetSurfaceMedia { .. } => "Assign Media",
             Self::AddMedia { .. } => "Add Media",
             Self::SetMediaPlayback { .. } => "Playback Settings",

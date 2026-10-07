@@ -510,3 +510,117 @@ fn folded_mesh_cells_are_reported_and_skipped() {
     );
     assert_eq!(report.plan.items.len(), 1);
 }
+
+fn mask(points: &[(f64, f64, bool)], feather: f64, invert: bool) -> om_project::Mask {
+    om_project::Mask {
+        points: points
+            .iter()
+            .map(|&(x, y, smooth)| om_project::MaskPoint { p: p(x, y), smooth })
+            .collect(),
+        feather: om_types::Finite::new(feather).unwrap(),
+        invert,
+    }
+}
+
+#[test]
+fn masks_match_reference() {
+    let Some(g) = gpu() else { return };
+    let mut c = Compositor::new(g);
+    let fx = Fixture::new((96, 96));
+    let cases = [
+        (
+            "hard triangle",
+            mask(
+                &[(0.2, 0.1, false), (0.9, 0.5, false), (0.15, 0.9, false)],
+                0.0,
+                false,
+            ),
+        ),
+        (
+            "feathered",
+            mask(
+                &[
+                    (0.2, 0.2, false),
+                    (0.8, 0.25, false),
+                    (0.75, 0.8, false),
+                    (0.25, 0.75, false),
+                ],
+                0.08,
+                false,
+            ),
+        ),
+        (
+            "smooth curve",
+            mask(
+                &[
+                    (0.3, 0.2, true),
+                    (0.8, 0.3, true),
+                    (0.7, 0.8, true),
+                    (0.2, 0.7, true),
+                ],
+                0.02,
+                false,
+            ),
+        ),
+        (
+            "inverted",
+            mask(
+                &[
+                    (0.3, 0.3, false),
+                    (0.7, 0.3, false),
+                    (0.7, 0.7, false),
+                    (0.3, 0.7, false),
+                ],
+                0.05,
+                true,
+            ),
+        ),
+    ];
+    for (label, m) in cases {
+        let mut s = surface(1, Shape::full_quad(), GRID);
+        s.mask = Some(m);
+        let pr = project(120, 100, vec![s]);
+        let out = fx.gpu_render(&mut c, &pr);
+        assert_matches_reference(&out, &fx.cpu_render(&pr), label, SHARP);
+    }
+}
+
+#[test]
+fn mask_textures_are_cached_and_released() {
+    let Some(g) = gpu() else { return };
+    let mut c = Compositor::new(g);
+    let fx = Fixture::new((16, 16));
+    for (id, img) in &fx.images {
+        c.set_image(*id, img).unwrap();
+    }
+    let mut s = surface(1, Shape::full_quad(), WHITE);
+    s.mask = Some(mask(
+        &[(0.1, 0.1, false), (0.9, 0.1, false), (0.5, 0.9, false)],
+        0.0,
+        false,
+    ));
+    let mut pr = project(32, 32, vec![s]);
+    c.render(&pr).unwrap();
+    let with_mask = c.resource_counts();
+    assert_eq!(with_mask.mask_textures, 1);
+    for _ in 0..50 {
+        c.render(&pr).unwrap();
+    }
+    assert_eq!(
+        c.resource_counts(),
+        with_mask,
+        "unchanged mask is not reallocated"
+    );
+    // Editing the mask re-rasterises; the visible result follows.
+    pr.surfaces[0].mask.as_mut().unwrap().invert = true;
+    c.render(&pr).unwrap();
+    let px = c.read_rgba8().unwrap();
+    assert_eq!(
+        &px[(16 * 32 + 16) * 4..(16 * 32 + 16) * 4 + 3],
+        &[0, 0, 0],
+        "centre hidden when inverted"
+    );
+    pr.surfaces[0].mask = None;
+    c.render(&pr).unwrap();
+    assert_eq!(c.resource_counts().mask_textures, 0);
+}
