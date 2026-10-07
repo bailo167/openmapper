@@ -1,0 +1,14 @@
+# Third-party material that is not a Cargo dependency.
+# Cargo dependencies are governed by deny.toml (licence allow-list).
+#
+# Each entry:
+#   - path: repository path or glob
+#     name: upstream name
+#     licence: SPDX identifier
+#     source: URL
+#     notes: optional
+entries:
+  - path: LICENSE
+    name: Apache License, Version 2.0 (canonical text)
+    licence: Apache-2.0
+    source: https://www.apache.org/licenses/LICENSE-2.0.txt
