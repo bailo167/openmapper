@@ -21,7 +21,7 @@
 use std::net::UdpSocket;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -48,15 +48,23 @@ pub enum OscError {
     Bind { port: u16, message: String },
 }
 
+/// Messages queued between drains at most (the rest are dropped).
+pub const MAX_QUEUED: usize = 4096;
+/// Longest cue-release fade accepted over OSC, in seconds.
+pub const MAX_FADE_SECONDS: f64 = 3600.0;
+/// Furthest timeline seek accepted over OSC, in seconds (a year).
+pub const MAX_SEEK_SECONDS: f64 = 365.0 * 86_400.0;
+
 fn number(arg: &OscType) -> Option<f64> {
-    match arg {
+    let v = match arg {
         OscType::Float(f) => Some(f64::from(*f)),
         OscType::Double(d) => Some(*d),
         OscType::Int(i) => Some(f64::from(*i)),
         OscType::Long(l) => Some(*l as f64),
         OscType::Bool(b) => Some(f64::from(u8::from(*b))),
         _ => None,
-    }
+    };
+    v.filter(|v| v.is_finite())
 }
 
 fn value(arg: &OscType) -> Option<ParamValue> {
@@ -84,7 +92,12 @@ pub fn translate(msg: &OscMessage) -> Result<ControlMessage, OscError> {
         ["transport", "restart"] => action(Action::Restart),
         ["cue", "go"] => action(Action::CueGoNext),
         ["cue", "release"] => action(Action::CueRelease {
-            fade: msg.args.first().and_then(number).unwrap_or(0.0).max(0.0),
+            fade: msg
+                .args
+                .first()
+                .and_then(number)
+                .unwrap_or(0.0)
+                .clamp(0.0, MAX_FADE_SECONDS),
         }),
         ["cue", id, "go"] => action(Action::CueGo(id.parse().map_err(|_| unknown())?)),
         ["timeline", id, op] => {
@@ -102,7 +115,7 @@ pub fn translate(msg: &OscMessage) -> Result<ControlMessage, OscError> {
                             address: msg.addr.clone(),
                             expected: "a position in seconds",
                         })?;
-                    action(Action::TimelineSeek(id, t.max(0.0)))
+                    action(Action::TimelineSeek(id, t.clamp(0.0, MAX_SEEK_SECONDS)))
                 }
                 _ => Err(unknown()),
             }
@@ -163,18 +176,32 @@ impl std::fmt::Debug for OscServer {
 }
 
 impl OscServer {
-    /// Binds `0.0.0.0:port` (0 picks a free port; see [`OscServer::port`]).
+    /// Binds `127.0.0.1:port` (0 picks a free port; see
+    /// [`OscServer::port`]).
     pub fn start(port: u16) -> Result<Self, OscError> {
+        Self::start_on(port, false)
+    }
+
+    /// As [`Self::start`]; with `network`, binds every interface so other
+    /// machines can send.
+    pub fn start_on(port: u16, network: bool) -> Result<Self, OscError> {
         let bind_err = |e: std::io::Error| OscError::Bind {
             port,
             message: e.to_string(),
         };
-        let socket = UdpSocket::bind(("0.0.0.0", port)).map_err(bind_err)?;
+        let ip = if network {
+            std::net::Ipv4Addr::UNSPECIFIED
+        } else {
+            std::net::Ipv4Addr::LOCALHOST
+        };
+        let socket = UdpSocket::bind((ip, port)).map_err(bind_err)?;
         socket
             .set_read_timeout(Some(Duration::from_millis(100)))
             .map_err(bind_err)?;
         let port = socket.local_addr().map_err(bind_err)?.port();
-        let (tx, rx) = channel();
+        // Bounded: a flood while the UI is not draining drops messages
+        // instead of growing memory.
+        let (tx, rx) = sync_channel(MAX_QUEUED);
         let stop = Arc::new(AtomicBool::new(false));
         let received = Arc::new(AtomicU64::new(0));
         let (s, r) = (Arc::clone(&stop), Arc::clone(&received));
@@ -210,7 +237,7 @@ impl OscServer {
 
 fn receive_loop(
     socket: &UdpSocket,
-    tx: &Sender<Result<ControlMessage, OscError>>,
+    tx: &SyncSender<Result<ControlMessage, OscError>>,
     stop: &AtomicBool,
     received: &AtomicU64,
 ) {
@@ -220,8 +247,9 @@ fn receive_loop(
             Ok(n) => {
                 received.fetch_add(1, Ordering::Relaxed);
                 for m in decode(&buf[..n]) {
-                    if tx.send(m).is_err() {
-                        return;
+                    match tx.try_send(m) {
+                        Ok(()) | Err(TrySendError::Full(_)) => {}
+                        Err(TrySendError::Disconnected(_)) => return,
                     }
                 }
             }

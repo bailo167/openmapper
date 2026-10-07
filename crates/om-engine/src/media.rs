@@ -269,7 +269,8 @@ struct ShaderEntry {
 const SHADER_CHECK_INTERVAL: Duration = Duration::from_millis(300);
 
 fn compile_shader(path: &Path) -> Result<Arc<om_isf::Compiled>, String> {
-    let src = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let src = om_project::store::read_limited_string(path, om_isf::MAX_SOURCE_BYTES as u64)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
     let doc = om_isf::parse(&src).map_err(|e| format!("{}: {e}", path.display()))?;
     om_isf::compile(&doc)
         .map(Arc::new)

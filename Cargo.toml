@@ -117,7 +117,6 @@ cc = "1.6.0"
 # WebAssembly plugins (milestone 9): JIT, WAT text for fixtures, no WASI.
 wasmtime = { version = "49.0.2", default-features = false, features = ["std", "runtime", "cranelift", "wat", "anyhow"] }
 rosc = "0.11.4"
-tiny_http = "0.12.0"
 mdns-sd = "0.21.5"
 midir = "0.11.0"
 eframe = { version = "=0.36.2", default-features = false, features = ["wgpu", "default_fonts", "accesskit", "wayland", "x11"] }

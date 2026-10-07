@@ -9,6 +9,8 @@
 
 /// Most vertices accepted after triangulation (three per triangle).
 pub const MAX_VERTICES: usize = 3_000_000;
+/// Largest OBJ file read.
+pub const MAX_FILE_BYTES: u64 = 512 << 20;
 
 /// A triangle soup: three entries per triangle.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -105,6 +107,11 @@ pub fn parse(text: &str) -> Result<Mesh, ObjError> {
                 if rest.len() < 3 {
                     return Err(err(line, "a face needs at least 3 vertices"));
                 }
+                // Checked before fanning out: one huge face must not allocate
+                // far past the cap.
+                if mesh.positions.len() + 3 * (rest.len() - 2) > MAX_VERTICES {
+                    return Err(err(line, "model is too large"));
+                }
                 let mut corners = Vec::with_capacity(rest.len());
                 for v in &rest {
                     let mut fields = v.split('/');
@@ -138,6 +145,13 @@ pub fn parse(text: &str) -> Result<Mesh, ObjError> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_huge_face_is_refused_before_fanning_out() {
+        let corners = MAX_VERTICES / 3 + 3;
+        let text = format!("v 0 0 0\nf{}\n", " 1".repeat(corners));
+        assert!(parse(&text).is_err());
+    }
 
     #[test]
     fn parses_quads_negative_indices_and_comments() {

@@ -822,7 +822,8 @@ fn render_output(
             Some(dir) if file.is_relative() => dir.join(file),
             _ => file.to_path_buf(),
         };
-        let text = fs::read_to_string(&full).map_err(|e| format!("{}: {e}", full.display()))?;
+        let text = om_project::store::read_limited_string(&full, om_geom::obj::MAX_FILE_BYTES)
+            .map_err(|e| format!("{}: {e}", full.display()))?;
         let mesh = om_geom::obj::parse(&text).map_err(|e| format!("{}: {e}", full.display()))?;
         compositor.set_model(&p.model, &mesh);
         if p.projector.is_none() {

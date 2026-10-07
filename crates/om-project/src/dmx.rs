@@ -15,6 +15,9 @@ pub const MAX_FIXTURES: usize = 4096;
 pub const MAX_FIXTURE_PIXELS: u32 = 65_536;
 /// Most nodes in a project.
 pub const MAX_NODES: usize = 64;
+/// Most distinct (node, universe) streams a project may send: bounds
+/// network traffic and per-frame sampling work.
+pub const MAX_UNIVERSES: usize = 1024;
 /// Allowed DMX refresh rates (packets per second per universe).
 pub const DMX_RATES: std::ops::RangeInclusive<u32> = 1..=44;
 
@@ -299,6 +302,7 @@ impl Dmx {
             }
         }
         let mut fixture_ids = std::collections::BTreeSet::new();
+        let mut streams = std::collections::HashSet::new();
         for f in &self.fixtures {
             if !fixture_ids.insert(f.id.to_string()) {
                 return Err(format!("duplicate fixture id {}", f.id));
@@ -318,6 +322,14 @@ impl Dmx {
                     range.start(),
                     range.end()
                 ));
+            }
+            for u in first..=last {
+                streams.insert((f.node, u));
+                if streams.len() > MAX_UNIVERSES {
+                    return Err(format!(
+                        "fixtures use more than {MAX_UNIVERSES} DMX universes"
+                    ));
+                }
             }
         }
         Ok(())
@@ -359,6 +371,33 @@ mod tests {
                 count,
             },
         }
+    }
+
+    #[test]
+    fn total_universes_are_capped() {
+        let n = node(DmxProtocol::Sacn {
+            address: String::new(),
+            priority: 100,
+        });
+        let id = n.id;
+        // 170 RGB pixels per universe: 65 536 pixels span 386 universes.
+        let mut dmx = Dmx {
+            nodes: vec![n],
+            ..Dmx::default()
+        };
+        let fixture = |u: u16| {
+            let mut f = strip(id, u, 1, MAX_FIXTURE_PIXELS);
+            f.id = FixtureId::new();
+            f
+        };
+        dmx.fixtures = vec![fixture(1), fixture(1000)];
+        dmx.validate().unwrap();
+        dmx.fixtures.push(fixture(2000));
+        assert!(dmx.validate().unwrap_err().contains("universes"));
+        // Overlapping fixtures share universes.
+        dmx.fixtures.pop();
+        dmx.fixtures.push(fixture(1));
+        dmx.validate().unwrap();
     }
 
     #[test]

@@ -10,7 +10,6 @@ publish.workspace = true
 [dependencies]
 om-project.workspace = true
 om-osc.workspace = true
-tiny_http.workspace = true
 mdns-sd.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

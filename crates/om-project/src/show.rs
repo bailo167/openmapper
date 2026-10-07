@@ -180,6 +180,10 @@ pub struct Controls {
     /// HTTP port for the OSCQuery service (0 disables it).
     #[serde(default = "default_oscquery_port")]
     pub oscquery_port: u16,
+    /// Accept OSC and OSCQuery from other machines (all interfaces, mDNS
+    /// advertisement). Off: this computer only.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub network: bool,
     /// MIDI-to-parameter mappings.
     #[serde(default)]
     pub midi: Vec<MidiBinding>,
@@ -286,6 +290,7 @@ impl Default for Controls {
         Self {
             osc_port: default_osc_port(),
             oscquery_port: default_oscquery_port(),
+            network: false,
             midi: Vec::new(),
             dmx_input: DmxInput::default(),
         }

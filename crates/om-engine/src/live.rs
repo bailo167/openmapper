@@ -68,12 +68,45 @@ pub fn apply_control(
     }
 }
 
+/// Most control messages applied per frame.
+pub const MAX_CONTROL_MESSAGES_PER_FRAME: usize = 1024;
+
+/// One frame's control messages as applied: only the last value per
+/// parameter (a flood of sets becomes one edit and one journal line per
+/// parameter per frame), actions in order, at most
+/// [`MAX_CONTROL_MESSAGES_PER_FRAME`].
+#[must_use]
+pub fn coalesce(messages: Vec<ControlMessage>) -> Vec<ControlMessage> {
+    let last: std::collections::HashMap<&om_project::ParamId, usize> = messages
+        .iter()
+        .enumerate()
+        .filter_map(|(i, m)| match m {
+            ControlMessage::Set { param, .. } => Some((param, i)),
+            ControlMessage::Action(_) => None,
+        })
+        .collect();
+    let keep: Vec<bool> = messages
+        .iter()
+        .enumerate()
+        .map(|(i, m)| match m {
+            ControlMessage::Set { param, .. } => last.get(param) == Some(&i),
+            ControlMessage::Action(_) => true,
+        })
+        .collect();
+    messages
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(m, k)| k.then_some(m))
+        .take(MAX_CONTROL_MESSAGES_PER_FRAME)
+        .collect()
+}
+
 /// OSC and OSCQuery servers, (re)started to match the project's settings.
 #[derive(Debug, Default)]
 pub struct ControlServers {
     osc: Option<om_osc::OscServer>,
     oscquery: Option<om_oscquery::OscQueryServer>,
-    ports: Option<(u16, u16)>,
+    ports: Option<(u16, u16, bool)>,
     last_publish: Option<Instant>,
     /// Human-readable status ("OSC :8010, OSCQuery :8011" or an error).
     pub status: String,
@@ -91,7 +124,7 @@ impl ControlServers {
 
     /// Starts/stops/restarts servers when the configured ports change.
     pub fn configure(&mut self, controls: &Controls, advertise: bool) {
-        let wanted = (controls.osc_port, controls.oscquery_port);
+        let wanted = (controls.osc_port, controls.oscquery_port, controls.network);
         if self.ports == Some(wanted) {
             return;
         }
@@ -100,7 +133,7 @@ impl ControlServers {
         self.oscquery = None;
         let mut status = Vec::new();
         if controls.osc_port != 0 {
-            match om_osc::OscServer::start(controls.osc_port) {
+            match om_osc::OscServer::start_on(controls.osc_port, controls.network) {
                 Ok(s) => {
                     status.push(format!("OSC :{}", s.port()));
                     self.osc = Some(s);
@@ -110,11 +143,12 @@ impl ControlServers {
         }
         if controls.oscquery_port != 0 {
             let osc_port = self.osc.as_ref().map_or(0, om_osc::OscServer::port);
-            match om_oscquery::OscQueryServer::start(
+            match om_oscquery::OscQueryServer::start_on(
                 controls.oscquery_port,
                 osc_port,
                 "OpenMapper",
                 advertise,
+                controls.network,
             ) {
                 Ok(s) => {
                     status.push(format!("OSCQuery :{}", s.port()));
@@ -125,8 +159,10 @@ impl ControlServers {
         }
         self.status = if status.is_empty() {
             "control servers off".into()
+        } else if controls.network {
+            format!("{} (network)", status.join(", "))
         } else {
-            status.join(", ")
+            format!("{} (this computer only)", status.join(", "))
         };
     }
 
@@ -253,6 +289,10 @@ pub struct Live {
     pub overrides: Overrides,
     /// Disable to keep tests from touching MIDI devices / mDNS.
     pub devices: bool,
+    /// Holds back the project's external connections (camera, network
+    /// output, DMX, remote control; see [`crate::trust`]). Front ends set
+    /// it for an opened project the user has not allowed.
+    pub external_blocked: bool,
     /// Origin of the live show clock (always running, unlike the media
     /// transport, so fades and modulators continue while media is paused).
     epoch: Option<Instant>,
@@ -314,7 +354,11 @@ impl Live {
         transport: &mut Transport,
         now: Instant,
     ) -> Project {
-        let controls = session.project().controls.clone();
+        let mut controls = session.project().controls.clone();
+        if self.external_blocked {
+            controls.network = false;
+            controls.dmx_input.enabled = false;
+        }
         self.servers.configure(&controls, self.devices);
         let mut messages = self.servers.poll();
         if self.devices {
@@ -338,7 +382,7 @@ impl Live {
             }
         }
         if self.devices {
-            self.dmx.configure(&session.project().controls.dmx_input);
+            self.dmx.configure(&controls.dmx_input);
             let (msgs, learned) = self.dmx.poll(session.project());
             messages.extend(msgs);
             if let Some(binding) = learned {
@@ -354,13 +398,16 @@ impl Live {
             }
         }
         let t = self.clock(now);
-        for msg in messages {
+        for msg in coalesce(messages) {
             if let Err(e) = apply_control(&msg, session, transport, &mut self.show, now, t) {
                 self.servers.errors.push(e);
             }
         }
         self.overrides = self.show.evaluate(session.project(), t, self.audio);
-        let effective = effective_project(session.project(), &self.overrides);
+        let mut effective = effective_project(session.project(), &self.overrides);
+        if self.external_blocked {
+            crate::trust::restrict(&mut effective);
+        }
         self.servers.publish(&effective, false);
         effective
     }

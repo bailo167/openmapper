@@ -105,3 +105,19 @@ fn audio_inputs_bind_as_textures() {
     assert_eq!(c.images, vec!["wave", "spectrum"]);
     assert!(c.field("wave").is_none(), "no uniform for a texture input");
 }
+
+#[test]
+fn pass_count_is_capped() {
+    let pass = r#"{"TARGET":"t"}"#;
+    let header = |n: usize| {
+        format!(
+            "/*{{\"PASSES\":[{}]}}*/ void main() {{ gl_FragColor = vec4(1.0); }}",
+            vec![pass; n].join(",")
+        )
+    };
+    assert!(parse(&header(MAX_PASSES)).is_ok());
+    assert!(matches!(
+        parse(&header(MAX_PASSES + 1)),
+        Err(IsfError::Header(_))
+    ));
+}

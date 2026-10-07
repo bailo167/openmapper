@@ -217,7 +217,10 @@ mod tests {
         // Paths outside the project folder are stored absolute, with the
         // platform's separator.
         assert!(
-            by_id[&1].new.replace('\\', "/").ends_with("clips/intro.mp4"),
+            by_id[&1]
+                .new
+                .replace('\\', "/")
+                .ends_with("clips/intro.mp4"),
             "{:?}",
             by_id[&1]
         );

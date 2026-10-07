@@ -46,6 +46,22 @@ Play, pause, stop (stops driving parameters) and seek.
 square, saw; rate in Hz, phase) or audio (overall level or low/mid/high band
 of the audio being played, × gain).
 
+## Listening and trust
+
+OSC and OSCQuery listen on **this computer only** (127.0.0.1) unless the
+project enables *Accept control from other computers*
+(`controls.network`); only then do they bind every interface and advertise
+OSCQuery over mDNS. Anyone who can reach those ports can control the show,
+so enable it on trusted show networks only. DMX input is off unless
+enabled.
+
+A project opened from a file may come from someone else. Its camera, NDI
+and network-stream inputs, NDI and stream outputs, DMX output, network
+control and DMX input stay **held back** until you allow them for that
+project (a bar lists them). The permission is remembered per user for that
+project and that exact list; adding a new destination later asks again
+(edits you make yourself keep the project allowed). See DECISIONS.md D-029.
+
 ## OSC (UDP, default port 8010)
 
 | Address | Arguments |
@@ -59,7 +75,10 @@ of the audio being played, × gain).
 | `/openmapper/timeline/<id>/seek` | seconds |
 
 Bundles are accepted. Invalid messages are ignored and listed in the
-OSC / MIDI tab.
+OSC / MIDI tab. Non-finite numbers are rejected; fades are capped at an
+hour and seeks at a year. At most 4096 messages queue between frames (the
+rest are dropped), and within a frame only the last value per parameter is
+applied (at most 1024 messages).
 
 ## OSCQuery (HTTP, default port 8011)
 
@@ -67,6 +86,9 @@ OSC / MIDI tab.
 `RANGE`, `ACCESS`, `DESCRIPTION`); `GET /<path>?VALUE` one attribute;
 `GET /?HOST_INFO` server info. Advertised over mDNS as `_oscjson._tcp`.
 Values refresh 10× per second. Not yet: `LISTEN` (WebSocket streaming).
+The HTTP server answers `GET` only, reads at most 8 KiB of request within
+2 s, serves at most 16 connections at once and closes every connection
+after its response.
 
 ## MIDI
 

@@ -64,6 +64,11 @@ pub struct OpenMapperApp {
     pending: Vec<(Command, Option<String>)>,
     end_coalescing: bool,
     transport: Transport,
+    /// Projects allowed to use the camera, network output, DMX and
+    /// remote control (om_engine::trust).
+    trust: om_engine::trust::TrustStore,
+    /// Revision whose connections were last checked against `trust`.
+    trust_checked: Option<u64>,
 }
 
 #[derive(Debug, Default)]
@@ -109,6 +114,8 @@ impl OpenMapperApp {
             show_tab: show_ui::ShowTab::Cues,
             dmx_ui: dmx_ui::DmxUi::default(),
             live_ui: live_ui::LiveUi::new(adapters.live.clone().map(om_engine::Discovery::new)),
+            trust: om_engine::trust::TrustStore::load_default(),
+            trust_checked: None,
         };
         if app.viewer.is_none() {
             app.error("No GPU renderer available; the canvas cannot be shown.");
@@ -166,6 +173,10 @@ impl OpenMapperApp {
         match Session::open(&path) {
             Ok((session, report)) => {
                 self.session = session;
+                // Someone else's project must not reach the camera, the
+                // network or DMX until allowed.
+                self.live.external_blocked = !self.trust.is_trusted(self.session.project());
+                self.trust_checked = None;
                 self.selected = None;
                 self.drag = None;
                 self.info(open_message(&path, &report));
@@ -234,6 +245,7 @@ impl OpenMapperApp {
             ui.menu_button("File", |ui| {
                 if ui.button("New").clicked() {
                     self.session = Session::new("Untitled");
+                    self.live.external_blocked = false;
                     self.selected = None;
                     self.info("New project");
                     ui.close();
@@ -1440,6 +1452,48 @@ impl OpenMapperApp {
         self.viewer.as_ref().and_then(|v| v.preview_id())
     }
 
+    /// While allowed, the user's own edits keep the project allowed; while
+    /// blocked, shows what is held back and offers to allow it.
+    fn trust_bar(&mut self, ui: &mut egui::Ui) {
+        let project = self.session.project();
+        if !self.live.external_blocked {
+            if self.trust_checked != Some(project.revision) {
+                self.trust_checked = Some(project.revision);
+                if !self.trust.is_trusted(project) {
+                    let project = project.clone();
+                    if let Err(e) = self.trust.allow(&project) {
+                        self.error(format!("Could not save project permissions: {e}"));
+                    }
+                }
+            }
+            return;
+        }
+        let items = om_engine::trust::external(project);
+        if items.is_empty() {
+            self.live.external_blocked = false;
+            return;
+        }
+        let mut allow = false;
+        egui::Panel::top("trust").show(ui, |ui| {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                "This project wants to connect outside OpenMapper. Held back until you allow it:",
+            );
+            for item in &items {
+                ui.label(format!("• {item}"));
+            }
+            allow = ui.button("Allow for this project").clicked();
+        });
+        if allow {
+            let project = self.session.project().clone();
+            if let Err(e) = self.trust.allow(&project) {
+                self.error(format!("Could not save project permissions: {e}"));
+            }
+            self.live.external_blocked = false;
+            self.trust_checked = Some(project.revision);
+        }
+    }
+
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             let p = self.session.project();
@@ -1729,6 +1783,7 @@ impl eframe::App for OpenMapperApp {
         }
         self.handle_shortcuts(&ctx);
         egui::Panel::top("menu").show(ui, |ui| self.top_bar(ui));
+        self.trust_bar(ui);
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
         egui::Panel::bottom("show")
             .resizable(true)

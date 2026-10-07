@@ -24,6 +24,8 @@ use serde::Deserialize;
 
 /// Largest accepted shader source (bytes); bounds parse/compile time.
 pub const MAX_SOURCE_BYTES: usize = 256 * 1024;
+/// Most render passes a shader may declare (each may own two textures).
+pub const MAX_PASSES: usize = 16;
 
 /// ISF loading/compilation failure.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -280,6 +282,12 @@ pub fn parse(source: &str) -> Result<IsfDoc, IsfError> {
         {
             return Err(IsfError::BadName(t.clone()));
         }
+    }
+    if passes.len() > MAX_PASSES {
+        return Err(IsfError::Header(format!(
+            "{} passes (at most {MAX_PASSES})",
+            passes.len()
+        )));
     }
     if passes.is_empty() {
         passes.push(Pass::default());

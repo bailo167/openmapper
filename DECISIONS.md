@@ -333,3 +333,33 @@ connecting a console mid-show cannot fire cues. Sources are not merged
 later options. Sockets are non-blocking and drained once a frame with a
 per-frame packet budget, and per-universe state is kept only for bound
 universes (bounded), so a packet flood cannot stall a frame or grow memory.
+
+## D-029 — Hardening from the pre-release security review (2026-10-07)
+
+A review of every untrusted-input boundary (docs/release/security-review.md)
+changed these defaults and limits:
+
+- **Remote control is local by default.** OSC and OSCQuery bind
+  127.0.0.1 unless the project sets `controls.network`; mDNS advertisement
+  only then. Previously every project listened on all interfaces, so anyone
+  on the LAN could drive a show. Existing projects become local-only until
+  the option is ticked — a deliberate behaviour change.
+- **OSCQuery uses a small bounded HTTP server** (GET only, 8 KiB request,
+  2 s deadline, 16 connections, connection closed per response) instead of
+  `tiny_http`, which buffered unbounded headers and spawned a thread per
+  connection.
+- **Project trust.** Opening a project holds back camera, NDI and network
+  stream inputs, NDI and stream outputs, DMX output, network control and
+  DMX input until the user allows them; the permission is remembered per
+  user as a fingerprint of the project id and that list of connections, so
+  a changed list asks again. Inter-app sharing (Syphon/Spout) and local
+  files are not gated: they do not leave the computer on their own.
+- **Bounded reads.** Files named by a project (project, journal, shaders,
+  plugins, OBJ models) must be regular files and are read with a size cap,
+  so `/dev/zero` or a FIFO cannot exhaust memory or hang the UI.
+- **Bounded parsing and work.** ISF size expressions are limited in length
+  and nesting (no stack overflow), ISF passes to 16, OBJ faces are checked
+  before fan-out, DMX projects to 1024 universes, OSC queues to 4096
+  messages with per-frame coalescing (bounding journal growth), and OSC
+  fades/seeks to finite, capped values. The naga GLSL frontend runs under
+  `catch_unwind`.

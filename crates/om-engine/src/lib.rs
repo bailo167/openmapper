@@ -13,6 +13,7 @@ mod media;
 pub mod plugins;
 mod publish;
 pub mod relink;
+pub mod trust;
 
 use std::path::{Path, PathBuf};
 

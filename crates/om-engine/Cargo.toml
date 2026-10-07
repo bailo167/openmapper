@@ -21,13 +21,13 @@ om-osc.workspace = true
 om-oscquery.workspace = true
 om-midi.workspace = true
 om-dmx.workspace = true
+serde_json.workspace = true
 om-time.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
 rosc.workspace = true
 om-geom.workspace = true
-serde_json.workspace = true
 om-media-ffmpeg = { workspace = true, features = ["fixtures"] }
 image.workspace = true
 tempfile.workspace = true

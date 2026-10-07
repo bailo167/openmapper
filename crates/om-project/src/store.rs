@@ -71,9 +71,49 @@ pub fn journal_path(path: &Path) -> PathBuf {
     with_suffix(path, ".journal")
 }
 
+/// Largest project file accepted.
+pub const MAX_PROJECT_BYTES: u64 = 64 << 20;
+
+/// Reads a regular file of at most `limit` bytes. Devices, pipes and
+/// directories are refused before opening (a FIFO would block the caller,
+/// `/dev/zero` would never end), and the read stops after `limit + 1`
+/// bytes. Paths come from project files, which may be untrusted.
+pub fn read_limited(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
+    use std::io::Read;
+    let meta = fs::metadata(path)?;
+    if !meta.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a regular file",
+        ));
+    }
+    if meta.len() > limit {
+        return Err(too_large(limit));
+    }
+    let mut out = Vec::new();
+    File::open(path)?.take(limit + 1).read_to_end(&mut out)?;
+    if out.len() as u64 > limit {
+        return Err(too_large(limit));
+    }
+    Ok(out)
+}
+
+/// [`read_limited`] as UTF-8 text.
+pub fn read_limited_string(path: &Path, limit: u64) -> io::Result<String> {
+    String::from_utf8(read_limited(path, limit)?)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+}
+
+fn too_large(limit: u64) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("file is larger than {limit} bytes"),
+    )
+}
+
 /// Reads, migrates and validates a project file.
 pub fn load(path: &Path) -> Result<Loaded, StoreError> {
-    let text = fs::read_to_string(path).map_err(io_err("reading", path))?;
+    let text = read_limited_string(path, MAX_PROJECT_BYTES).map_err(io_err("reading", path))?;
     Project::from_json(&text).map_err(|source| StoreError::Project {
         path: path.to_owned(),
         source,
@@ -279,11 +319,18 @@ impl Journal {
         project_path: &Path,
     ) -> Result<Option<JournalContents<T>>, StoreError> {
         let path = journal_path(project_path);
-        let file = match File::open(&path) {
-            Ok(f) => f,
+        match fs::metadata(&path) {
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(io_err("opening", &path)(e)),
-        };
+            Ok(m) if !m.is_file() => {
+                return Err(io_err("opening", &path)(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "not a regular file",
+                )));
+            }
+            Ok(_) => {}
+        }
+        let file = File::open(&path).map_err(io_err("opening", &path))?;
         let corrupt = |line: usize, message: String| StoreError::Journal {
             path: path.clone(),
             line,
@@ -340,5 +387,40 @@ impl Journal {
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(io_err("removing", &path)(e)),
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_limited_refuses_non_files_and_oversize() {
+        let dir = tempfile::tempdir().unwrap();
+        let ok = dir.path().join("ok.txt");
+        fs::write(&ok, "hello").unwrap();
+        assert_eq!(read_limited_string(&ok, 5).unwrap(), "hello");
+        assert_eq!(
+            read_limited(&ok, 4).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(
+            read_limited(dir.path(), 1 << 20).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput,
+            "directories are refused"
+        );
+        assert!(read_limited(&dir.path().join("missing"), 10).is_err());
+        #[cfg(unix)]
+        {
+            // An endless device must not be read.
+            let e = read_limited(Path::new("/dev/zero"), 1 << 20).unwrap_err();
+            assert_eq!(e.kind(), io::ErrorKind::InvalidInput);
+        }
+        fs::write(&ok, [0xff, 0xfe]).unwrap();
+        assert!(read_limited_string(&ok, 10).is_err(), "invalid UTF-8");
+        // Project loading applies it.
+        let dev = if cfg!(unix) { "/dev/zero" } else { "NUL" };
+        assert!(load(Path::new(dev)).is_err());
     }
 }

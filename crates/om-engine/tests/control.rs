@@ -269,3 +269,30 @@ fn servers_restart_when_ports_change() {
     });
     assert!(session.project().master.blackout);
 }
+
+#[test]
+fn control_floods_coalesce_per_parameter() {
+    use om_engine::live::{MAX_CONTROL_MESSAGES_PER_FRAME, coalesce};
+    use om_show::control::{Action, ControlMessage};
+    let set = |p: ParamId, v: f64| ControlMessage::Set {
+        param: p,
+        value: ParamValue::Float(v),
+    };
+    let msgs = vec![
+        set(ParamId::MasterOpacity, 0.1),
+        ControlMessage::Action(Action::Play),
+        set(ParamId::MasterOpacity, 0.2),
+        set(ParamId::MasterBlackout, 1.0),
+        set(ParamId::MasterOpacity, 0.3),
+    ];
+    assert_eq!(
+        coalesce(msgs),
+        vec![
+            ControlMessage::Action(Action::Play),
+            set(ParamId::MasterBlackout, 1.0),
+            set(ParamId::MasterOpacity, 0.3),
+        ]
+    );
+    let flood = vec![ControlMessage::Action(Action::Play); 10_000];
+    assert_eq!(coalesce(flood).len(), MAX_CONTROL_MESSAGES_PER_FRAME);
+}

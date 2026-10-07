@@ -18,6 +18,9 @@ use om_types::MediaId;
 
 use crate::media::resolve_media_path;
 
+/// Largest plugin file read.
+pub const MAX_MODULE_BYTES: u64 = 16 << 20;
+
 struct StageRun {
     name: String,
     runner: PluginRunner,
@@ -76,6 +79,9 @@ impl PluginStage {
     }
 
     fn module(&mut self, path: &Path) -> Result<Plugin, String> {
+        // One compile per file however the project spells its path.
+        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+        let path = canonical.as_path();
         if let Some(m) = self.modules.get(path) {
             return m.clone();
         }
@@ -84,9 +90,19 @@ impl PluginStage {
                 .host_error
                 .clone()
                 .unwrap_or_else(|| "plugin host unavailable".into())),
-            Some(h) => std::fs::read(path)
+            Some(h) => om_project::store::read_limited(path, MAX_MODULE_BYTES)
                 .map_err(|e| format!("{}: {e}", path.display()))
-                .and_then(|bytes| h.load(&bytes).map_err(|e| e.to_string())),
+                .and_then(|bytes| {
+                    // Text format only from `.wat` files: a parse error would
+                    // otherwise echo a line of whatever file a project names.
+                    let wat = path
+                        .extension()
+                        .is_some_and(|e| e.eq_ignore_ascii_case("wat"));
+                    if !wat && !bytes.starts_with(b"\0asm") {
+                        return Err(format!("{}: not a WebAssembly module", path.display()));
+                    }
+                    h.load(&bytes).map_err(|e| e.to_string())
+                }),
         };
         self.modules.insert(path.to_owned(), loaded.clone());
         loaded
@@ -95,7 +111,12 @@ impl PluginStage {
     /// The manifest of the plugin file at `path` (resolved), once loaded.
     #[must_use]
     pub fn manifest(&self, path: &Path) -> Option<&om_plugin_api::Manifest> {
-        self.modules.get(path)?.as_ref().ok().map(|p| &p.manifest)
+        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+        self.modules
+            .get(&canonical)?
+            .as_ref()
+            .ok()
+            .map(|p| &p.manifest)
     }
 
     /// Forgets loaded plugin files so changed files are read again.
@@ -350,6 +371,19 @@ mod tests {
         assert!(!stage.has_chain(id));
         assert!(stage.shows_original(id));
         assert!(!stage.status(id)[0].ok);
+
+        // Text format only from `.wat` files; endless devices are refused.
+        std::fs::write(dir.path().join("secret.txt"), INVERT).unwrap();
+        stage.sync(&project(vec![use_("secret.txt")]), Some(dir.path()));
+        assert!(
+            stage.status(id)[0]
+                .state
+                .contains("not a WebAssembly module")
+        );
+        if cfg!(unix) {
+            stage.sync(&project(vec![use_("/dev/zero")]), Some(dir.path()));
+            assert!(stage.status(id)[0].state.contains("not a regular file"));
+        }
 
         // Removing plugins removes the chain.
         stage.sync(&project(Vec::new()), Some(dir.path()));

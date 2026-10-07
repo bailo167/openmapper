@@ -569,6 +569,22 @@ impl OpenMapperApp {
             }
             ui.weak("(0 = off)");
         });
+        let mut network = controls.network;
+        if ui
+            .checkbox(&mut network, "Accept control from other computers")
+            .on_hover_text(
+                "Listen on every network interface and advertise OSCQuery over mDNS. \
+                 Anyone on the network can then control the show: use trusted networks only.",
+            )
+            .changed()
+        {
+            self.queue(Command::SetControls {
+                controls: om_project::Controls {
+                    network,
+                    ..controls.clone()
+                },
+            });
+        }
         ui.label(&self.live.servers.status);
         if let Some(e) = self.live.servers.errors.last() {
             ui.colored_label(

@@ -327,9 +327,10 @@ impl Viewer {
                 Some(dir) if path.is_relative() => dir.join(path),
                 _ => path.to_path_buf(),
             };
-            let loaded = std::fs::read_to_string(&full)
-                .map_err(|e| format!("{}: {e}", full.display()))
-                .and_then(|text| om_geom::obj::parse(&text).map_err(|e| e.to_string()));
+            let loaded =
+                om_project::store::read_limited_string(&full, om_geom::obj::MAX_FILE_BYTES)
+                    .map_err(|e| format!("{}: {e}", full.display()))
+                    .and_then(|text| om_geom::obj::parse(&text).map_err(|e| e.to_string()));
             let entry = match loaded {
                 Ok(mesh) => {
                     self.compositor.set_model(key, &mesh);
