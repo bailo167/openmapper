@@ -214,8 +214,10 @@ mod tests {
         ];
         let found = find(&project, Some(&proj_dir), &lib);
         let by_id: HashMap<u128, &Relink> = found.iter().map(|r| (r.media.as_u128(), r)).collect();
+        // Paths outside the project folder are stored absolute, with the
+        // platform's separator.
         assert!(
-            by_id[&1].new.ends_with("clips/intro.mp4"),
+            by_id[&1].new.replace('\\', "/").ends_with("clips/intro.mp4"),
             "{:?}",
             by_id[&1]
         );
