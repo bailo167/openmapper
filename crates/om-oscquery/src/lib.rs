@@ -286,6 +286,13 @@ impl Drop for OscQueryServer {
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
+        // tiny_http unblocks its accept thread by connecting to the listen
+        // address; with 0.0.0.0 that fails on Windows and the port stays
+        // bound. Connect via loopback so the accept thread exits.
+        let _ = std::net::TcpStream::connect_timeout(
+            &std::net::SocketAddr::from(([127, 0, 0, 1], self.port)),
+            Duration::from_millis(200),
+        );
         if let Some(d) = self.mdns.take() {
             let _ = d.shutdown();
         }
