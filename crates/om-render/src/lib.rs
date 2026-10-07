@@ -15,6 +15,7 @@
 mod colour;
 pub mod compare;
 mod compositor;
+pub mod effects;
 mod plan;
 pub mod reference;
 

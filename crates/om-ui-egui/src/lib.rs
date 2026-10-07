@@ -775,6 +775,7 @@ impl OpenMapperApp {
             }
         }
         self.mask_controls(ui, &surface);
+        self.effect_controls(ui, &surface);
         egui::ComboBox::from_label("Blend")
             .selected_text(format!("{:?}", surface.blend))
             .show_ui(ui, |ui| {
@@ -799,6 +800,126 @@ impl OpenMapperApp {
         if ui.button("Remove surface").clicked() {
             self.queue(Command::RemoveSurface { id });
             self.selected = None;
+        }
+    }
+
+    fn effect_controls(&mut self, ui: &mut egui::Ui, surface: &Surface) {
+        use om_project::{Effect, EffectKind, MAX_BLUR_RADIUS, MAX_EFFECTS};
+        let id = surface.id;
+        ui.separator();
+        let mut effects = surface.effects.clone();
+        let mut changed: Option<bool> = None; // Some(coalesce?)
+        ui.horizontal(|ui| {
+            ui.label("Effects");
+            ui.add_enabled_ui(effects.len() < MAX_EFFECTS, |ui| {
+                ui.menu_button("+ Add", |ui| {
+                    let options = [
+                        EffectKind::neutral_color(),
+                        EffectKind::Invert {},
+                        EffectKind::Blur {
+                            radius: om_types::Finite::new(4.0).unwrap_or(om_types::Finite::ZERO),
+                        },
+                        EffectKind::Pixelate { size: 8 },
+                    ];
+                    for kind in options {
+                        if ui.button(kind.label()).clicked() {
+                            effects.push(Effect {
+                                enabled: true,
+                                kind,
+                            });
+                            changed = Some(false);
+                            ui.close();
+                        }
+                    }
+                });
+            });
+        });
+        let n = effects.len();
+        let mut remove = None;
+        let mut swap = None;
+        for (i, e) in effects.iter_mut().enumerate() {
+            ui.push_id(i, |ui| {
+                ui.horizontal(|ui| {
+                    if ui.checkbox(&mut e.enabled, e.kind.label()).changed() {
+                        changed = Some(false);
+                    }
+                    if ui
+                        .add_enabled(i > 0, egui::Button::new("↑").small())
+                        .clicked()
+                    {
+                        swap = Some((i, i - 1));
+                    }
+                    if ui
+                        .add_enabled(i + 1 < n, egui::Button::new("↓").small())
+                        .clicked()
+                    {
+                        swap = Some((i, i + 1));
+                    }
+                    if ui.small_button("Remove").clicked() {
+                        remove = Some(i);
+                    }
+                });
+                let mut slider = |ui: &mut egui::Ui,
+                                  v: &mut om_types::Finite,
+                                  range: std::ops::RangeInclusive<f64>,
+                                  text: &str| {
+                    let mut x = v.get();
+                    let r = ui.add(egui::Slider::new(&mut x, range).text(text));
+                    if r.changed()
+                        && let Ok(f) = om_types::Finite::new(x)
+                    {
+                        *v = f;
+                        changed = Some(true);
+                    }
+                    if r.drag_stopped() || r.lost_focus() {
+                        self.end_coalescing = true;
+                    }
+                };
+                match &mut e.kind {
+                    EffectKind::Color {
+                        brightness,
+                        contrast,
+                        saturation,
+                        hue,
+                        gamma,
+                    } => {
+                        slider(ui, brightness, -1.0..=1.0, "Brightness");
+                        slider(ui, contrast, 0.0..=4.0, "Contrast");
+                        slider(ui, saturation, 0.0..=4.0, "Saturation");
+                        slider(ui, hue, -180.0..=180.0, "Hue°");
+                        slider(ui, gamma, 0.1..=10.0, "Gamma");
+                    }
+                    EffectKind::Blur { radius } => {
+                        slider(ui, radius, 0.0..=MAX_BLUR_RADIUS, "Radius px")
+                    }
+                    EffectKind::Pixelate { size } => {
+                        let r = ui.add(egui::Slider::new(size, 1..=256).text("Block px"));
+                        if r.changed() {
+                            changed = Some(true);
+                        }
+                        if r.drag_stopped() || r.lost_focus() {
+                            self.end_coalescing = true;
+                        }
+                    }
+                    EffectKind::Invert {} => {}
+                }
+            });
+        }
+        if let Some((a, b)) = swap {
+            effects.swap(a, b);
+            changed = Some(false);
+        }
+        if let Some(i) = remove {
+            effects.remove(i);
+            changed = Some(false);
+        }
+        match changed {
+            Some(true) => self.queue_coalescing(
+                Command::SetSurfaceEffects { id, effects },
+                format!("effects:{id}"),
+            ),
+            Some(false) => self.queue(Command::SetSurfaceEffects { id, effects }),
+            None => {}
         }
     }
 
@@ -1275,7 +1396,9 @@ impl eframe::App for OpenMapperApp {
             .show(ui, |ui| self.left_panel(ui));
         egui::Panel::right("inspector")
             .default_size(260.0)
-            .show(ui, |ui| self.inspector(ui));
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| self.inspector(ui));
+            });
         egui::CentralPanel::default().show(ui, |ui| self.canvas_view(ui));
         self.output_windows(&ctx);
         self.apply_pending();

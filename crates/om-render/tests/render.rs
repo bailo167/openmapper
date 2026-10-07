@@ -624,3 +624,87 @@ fn mask_textures_are_cached_and_released() {
     c.render(&pr).unwrap();
     assert_eq!(c.resource_counts().mask_textures, 0);
 }
+
+fn fx(kind: om_project::EffectKind) -> om_project::Effect {
+    om_project::Effect {
+        enabled: true,
+        kind,
+    }
+}
+
+fn finite(v: f64) -> om_types::Finite {
+    om_types::Finite::new(v).unwrap()
+}
+
+#[test]
+fn effects_match_reference() {
+    use om_project::EffectKind;
+    let Some(g) = gpu() else { return };
+    let mut c = Compositor::new(g);
+    let fx_ = Fixture::new((64, 48));
+    let cases: Vec<(&str, Vec<om_project::Effect>)> = vec![
+        (
+            "color",
+            vec![fx(EffectKind::Color {
+                brightness: finite(0.1),
+                contrast: finite(1.3),
+                saturation: finite(0.6),
+                hue: finite(40.0),
+                gamma: finite(1.4),
+            })],
+        ),
+        ("invert", vec![fx(EffectKind::Invert {})]),
+        (
+            "blur",
+            vec![fx(EffectKind::Blur {
+                radius: finite(5.0),
+            })],
+        ),
+        ("pixelate", vec![fx(EffectKind::Pixelate { size: 6 })]),
+        (
+            "chain",
+            vec![
+                fx(EffectKind::Pixelate { size: 4 }),
+                fx(EffectKind::Blur {
+                    radius: finite(2.5),
+                }),
+                fx(EffectKind::Invert {}),
+            ],
+        ),
+    ];
+    for (label, effects) in cases {
+        let mut s = surface(1, Shape::full_quad(), GRID);
+        s.effects = effects;
+        let pr = project(64, 48, vec![s]);
+        let out = fx_.gpu_render(&mut c, &pr);
+        assert_matches_reference(&out, &fx_.cpu_render(&pr), label, SHARP);
+    }
+}
+
+#[test]
+fn disabled_effects_are_skipped_and_targets_released() {
+    use om_project::EffectKind;
+    let Some(g) = gpu() else { return };
+    let mut c = Compositor::new(g);
+    let fx_ = Fixture::new((32, 32));
+    let mut s = surface(1, Shape::full_quad(), GRID);
+    s.effects = vec![om_project::Effect {
+        enabled: false,
+        kind: EffectKind::Invert {},
+    }];
+    let pr_disabled = project(32, 32, vec![s.clone()]);
+    let plain = fx_.gpu_render(
+        &mut c,
+        &project(32, 32, vec![surface(1, Shape::full_quad(), GRID)]),
+    );
+    assert_eq!(
+        fx_.gpu_render(&mut c, &pr_disabled),
+        plain,
+        "disabled effect is a no-op"
+    );
+    s.effects[0].enabled = true;
+    fx_.gpu_render(&mut c, &project(32, 32, vec![s]));
+    assert_eq!(c.resource_counts().effect_targets, 1);
+    fx_.gpu_render(&mut c, &pr_disabled);
+    assert_eq!(c.resource_counts().effect_targets, 0);
+}

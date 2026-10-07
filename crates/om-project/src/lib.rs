@@ -14,9 +14,9 @@ pub mod store;
 
 pub use migrate::{CURRENT_VERSION, FORMAT};
 pub use schema::{
-    BlendMode, Canvas, DisplayTarget, Extensions, MAX_MASK_POINTS, MAX_MESH_DIVISIONS, Mask,
-    MaskPoint, Media, MediaSource, Output, PatternKind, Playback, Project, Shape, Show, Surface,
-    Timebase, line_quad,
+    BlendMode, Canvas, DisplayTarget, Effect, EffectKind, Extensions, MAX_BLUR_RADIUS, MAX_EFFECTS,
+    MAX_MASK_POINTS, MAX_MESH_DIVISIONS, Mask, MaskPoint, Media, MediaSource, Output, PatternKind,
+    Playback, Project, Shape, Show, Surface, Timebase, line_quad,
 };
 
 use std::collections::HashSet;
@@ -126,6 +126,17 @@ impl Project {
             }
             if let Some(Err(e)) = s.mask.as_ref().map(Mask::validate) {
                 return invalid(format!("surface {} mask: {e}", s.id));
+            }
+            if s.effects.len() > MAX_EFFECTS {
+                return invalid(format!(
+                    "surface {} has more than {MAX_EFFECTS} effects",
+                    s.id
+                ));
+            }
+            for e in &s.effects {
+                if let Err(msg) = e.kind.validate() {
+                    return invalid(format!("surface {} effect: {msg}", s.id));
+                }
             }
         }
         let mut media_ids = HashSet::new();

@@ -181,6 +181,9 @@ pub struct Surface {
     /// Optional mask limiting where the surface is visible.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mask: Option<Mask>,
+    /// Effects applied to the media, in order, before mapping.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<Effect>,
     /// Media shown on this surface; `None` renders nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media: Option<MediaId>,
@@ -199,6 +202,7 @@ impl Surface {
             shape: Shape::default(),
             blend: BlendMode::Normal,
             mask: None,
+            effects: Vec::new(),
             media: None,
             extensions: Extensions::new(),
         }
@@ -242,6 +246,113 @@ pub enum Shape {
         width: Finite,
         uv: [Point2; 4],
     },
+}
+
+/// One effect in a surface's chain.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Effect {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    pub kind: EffectKind,
+}
+
+/// Largest blur radius in media pixels.
+pub const MAX_BLUR_RADIUS: f64 = 60.0;
+/// Most effects per surface.
+pub const MAX_EFFECTS: usize = 16;
+
+/// First-party effects. Colour maths works on un-premultiplied,
+/// sRGB-encoded values (as common image tools do); see docs/effects.md.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "effect", rename_all = "snake_case", deny_unknown_fields)]
+pub enum EffectKind {
+    Color {
+        /// Added to each channel, -1..=1.
+        #[serde(default)]
+        brightness: Finite,
+        /// Scales around mid-grey, 0..=4 (1 = unchanged).
+        #[serde(default = "finite_one")]
+        contrast: Finite,
+        /// 0 = greyscale, 1 = unchanged, up to 4.
+        #[serde(default = "finite_one")]
+        saturation: Finite,
+        /// Hue rotation in degrees, -180..=180.
+        #[serde(default)]
+        hue: Finite,
+        /// Gamma, 0.1..=10 (1 = unchanged).
+        #[serde(default = "finite_one")]
+        gamma: Finite,
+    },
+    /// Struct-shaped (not unit) so unknown fields are rejected.
+    Invert {},
+    /// Gaussian blur; `radius` in media pixels (3 sigma), 0..=60.
+    Blur { radius: Finite },
+    /// Square blocks of `size` media pixels, 1..=256.
+    Pixelate { size: u16 },
+}
+
+fn finite_one() -> Finite {
+    Finite::ONE
+}
+
+impl EffectKind {
+    /// A neutral colour effect.
+    #[must_use]
+    pub fn neutral_color() -> Self {
+        Self::Color {
+            brightness: Finite::ZERO,
+            contrast: Finite::ONE,
+            saturation: Finite::ONE,
+            hue: Finite::ZERO,
+            gamma: Finite::ONE,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        let range = |name: &str, v: Finite, lo: f64, hi: f64| {
+            if (lo..=hi).contains(&v.get()) {
+                Ok(())
+            } else {
+                Err(format!("{name} {} is outside {lo}..={hi}", v.get()))
+            }
+        };
+        match self {
+            Self::Color {
+                brightness,
+                contrast,
+                saturation,
+                hue,
+                gamma,
+            } => {
+                range("brightness", *brightness, -1.0, 1.0)?;
+                range("contrast", *contrast, 0.0, 4.0)?;
+                range("saturation", *saturation, 0.0, 4.0)?;
+                range("hue", *hue, -180.0, 180.0)?;
+                range("gamma", *gamma, 0.1, 10.0)
+            }
+            Self::Invert {} => Ok(()),
+            Self::Blur { radius } => range("blur radius", *radius, 0.0, MAX_BLUR_RADIUS),
+            Self::Pixelate { size } => {
+                if (1..=256).contains(size) {
+                    Ok(())
+                } else {
+                    Err(format!("pixelate size {size} is outside 1..=256"))
+                }
+            }
+        }
+    }
+
+    /// Short label for UIs and logs.
+    #[must_use]
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Color { .. } => "Color",
+            Self::Invert {} => "Invert",
+            Self::Blur { .. } => "Blur",
+            Self::Pixelate { .. } => "Pixelate",
+        }
+    }
 }
 
 /// A closed mask path in canvas space. Each point is a corner or a smooth

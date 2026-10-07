@@ -58,6 +58,8 @@ pub struct DrawItem {
     pub blend: BlendMode,
     /// The surface's mask, flattened, if it has one (shared by its items).
     pub mask: Option<std::sync::Arc<MaskShape>>,
+    /// Enabled effects applied to the media first (shared by its items).
+    pub effects: Option<std::sync::Arc<Vec<om_project::EffectKind>>>,
 }
 
 /// A mask ready to rasterise: polygon in canvas space plus edge settings.
@@ -227,6 +229,13 @@ pub fn plan(project: &Project, is_loaded: impl Fn(MediaId) -> bool) -> RenderPla
                 invert: m.invert,
             })
         });
+        let enabled: Vec<om_project::EffectKind> = s
+            .effects
+            .iter()
+            .filter(|e| e.enabled)
+            .map(|e| e.kind.clone())
+            .collect();
+        let effects = (!enabled.is_empty()).then(|| std::sync::Arc::new(enabled));
         let parts = pieces(&s.shape, aspect);
         let total = parts.len();
         let mut failed = 0u32;
@@ -250,6 +259,7 @@ pub fn plan(project: &Project, is_loaded: impl Fn(MediaId) -> bool) -> RenderPla
                     opacity: s.opacity.get() as f32,
                     blend: s.blend,
                     mask: mask.clone(),
+                    effects: effects.clone(),
                 }),
                 Err(e) => {
                     failed += 1;

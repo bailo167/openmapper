@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use om_project::{
-    BlendMode, Canvas, DisplayTarget, Mask, Media, Output, Playback, Project, Shape, Surface,
+    BlendMode, Canvas, DisplayTarget, Effect, Mask, Media, Output, Playback, Project, Shape,
+    Surface,
 };
 use om_types::{MediaId, OutputId, SurfaceId, UnitInterval};
 use serde::{Deserialize, Serialize};
@@ -47,6 +48,11 @@ pub enum Command {
     SetSurfaceBlend {
         id: SurfaceId,
         blend: BlendMode,
+    },
+    /// Replaces a surface's whole effect chain.
+    SetSurfaceEffects {
+        id: SurfaceId,
+        effects: Vec<Effect>,
     },
     /// Sets (`Some`) or removes (`None`) a surface's mask.
     SetSurfaceMask {
@@ -309,6 +315,26 @@ impl Command {
                     events: vec![Event::SurfaceChanged { id: *id }],
                 })
             }
+            Self::SetSurfaceEffects { id, effects } => {
+                if effects.len() > om_project::MAX_EFFECTS {
+                    return Err(CommandError::Invalid(format!(
+                        "at most {} effects per surface",
+                        om_project::MAX_EFFECTS
+                    )));
+                }
+                for e in effects {
+                    e.kind.validate().map_err(CommandError::Invalid)?;
+                }
+                let at = surface_index(project, *id)?;
+                let old = std::mem::replace(&mut project.surfaces[at].effects, effects.clone());
+                Ok(Applied {
+                    inverse: Self::SetSurfaceEffects {
+                        id: *id,
+                        effects: old,
+                    },
+                    events: vec![Event::SurfaceChanged { id: *id }],
+                })
+            }
             Self::SetSurfaceMask { id, mask } => {
                 if let Some(m) = mask {
                     m.validate().map_err(CommandError::Invalid)?;
@@ -477,6 +503,7 @@ impl Command {
             Self::SetSurfaceShape { .. } => "Edit Shape",
             Self::SetSurfaceBlend { .. } => "Blend Mode",
             Self::SetSurfaceMask { .. } => "Edit Mask",
+            Self::SetSurfaceEffects { .. } => "Edit Effects",
             Self::SetSurfaceMedia { .. } => "Assign Media",
             Self::AddMedia { .. } => "Add Media",
             Self::SetMediaPlayback { .. } => "Playback Settings",

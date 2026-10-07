@@ -50,6 +50,7 @@ pub struct ResourceCounts {
     pub vertex_bytes: u64,
     pub blit_pipelines: usize,
     pub mask_textures: usize,
+    pub effect_targets: usize,
 }
 
 #[repr(C)]
@@ -84,8 +85,24 @@ struct GpuImage {
     texture: wgpu::Texture,
     size: (u32, u32),
     bind_group: wgpu::BindGroup,
+    /// Same texture bound for `textureLoad` (effect input).
+    load_bind: wgpu::BindGroup,
     bytes: u64,
 }
+
+/// Per-surface effect targets: two ping-pong textures at media size.
+struct SurfaceFx {
+    size: (u32, u32),
+    _textures: [wgpu::Texture; 2],
+    views: [wgpu::TextureView; 2],
+    load_binds: [wgpu::BindGroup; 2],
+    media_binds: [wgpu::BindGroup; 2],
+    uniforms: Vec<(wgpu::Buffer, wgpu::BindGroup)>,
+    /// Which target holds this frame's result.
+    output: Option<usize>,
+}
+
+const FX_UNIFORM_SIZE: u64 = 72 * 4;
 
 struct Canvas {
     size: (u32, u32),
@@ -116,6 +133,9 @@ pub struct Compositor {
     /// Bound for unmasked items (never sampled).
     no_mask: (wgpu::Texture, wgpu::BindGroup),
     masks: HashMap<om_types::SurfaceId, GpuMask>,
+    fx_layout: wgpu::BindGroupLayout,
+    fx_pipelines: HashMap<&'static str, wgpu::RenderPipeline>,
+    fx: HashMap<om_types::SurfaceId, SurfaceFx>,
 }
 
 impl std::fmt::Debug for Compositor {
@@ -229,6 +249,62 @@ impl Compositor {
             }],
         });
         let no_mask = (no_mask_tex, no_mask_bind);
+        let fx_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("om effect"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(FX_UNIFORM_SIZE),
+                },
+                count: None,
+            }],
+        });
+        let fx_module = device.create_shader_module(wgpu::include_wgsl!("effects.wgsl"));
+        let fx_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("om effect"),
+            bind_group_layouts: &[Some(&fx_layout), Some(&mask_layout)],
+            immediate_size: 0,
+        });
+        let fx_pipelines = [
+            "fs_color",
+            "fs_invert",
+            "fs_blur_h",
+            "fs_blur_v",
+            "fs_pixelate",
+        ]
+        .into_iter()
+        .map(|entry| {
+            let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(entry),
+                layout: Some(&fx_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &fx_module,
+                    entry_point: Some("vs_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &fx_module,
+                    entry_point: Some(entry),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: WORKING_FORMAT,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            });
+            (entry, p)
+        })
+        .collect();
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("om composite"),
             bind_group_layouts: &[Some(&item_layout), Some(&media_layout), Some(&mask_layout)],
@@ -316,6 +392,9 @@ impl Compositor {
             mask_gen_pipeline,
             no_mask,
             masks: HashMap::new(),
+            fx_layout,
+            fx_pipelines,
+            fx: HashMap::new(),
         }
     }
 
@@ -359,12 +438,14 @@ impl Compositor {
             });
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
             let bind_group = texture_bind_group(device, &self.media_layout, &view, &self.sampler);
+            let load_bind = load_bind_group(device, &self.mask_layout, &view);
             self.images.insert(
                 id,
                 GpuImage {
                     texture,
                     size: dims,
                     bind_group,
+                    load_bind,
                     bytes: texels.len() as u64,
                 },
             );
@@ -431,6 +512,7 @@ impl Compositor {
                     label: Some("om masks"),
                 });
         self.update_masks(&frame_plan, size, &mut mask_encoder);
+        self.update_effects(&frame_plan, &mut mask_encoder);
         self.gpu.queue().submit([mask_encoder.finish()]);
 
         // Geometry: triangle fans flattened into a list; one uniform per item.
@@ -527,7 +609,13 @@ impl Compositor {
                     #[allow(clippy::cast_possible_truncation)]
                     let offset = (i as u64 * self.uniform_stride) as u32;
                     pass.set_bind_group(0, ubind, &[offset]);
-                    pass.set_bind_group(1, &img.bind_group, &[]);
+                    let media_bind = item
+                        .effects
+                        .as_ref()
+                        .and_then(|_| self.fx.get(&item.surface))
+                        .and_then(|fx| fx.output.map(|i| &fx.media_binds[i]))
+                        .unwrap_or(&img.bind_group);
+                    pass.set_bind_group(1, media_bind, &[]);
                     let mask_bind = self
                         .masks
                         .get(&item.surface)
@@ -681,7 +769,159 @@ impl Compositor {
             vertex_bytes: self.vertices.as_ref().map_or(0, |v| v.1),
             blit_pipelines: self.blit_pipelines.len(),
             mask_textures: self.masks.len(),
+            effect_targets: self.fx.len(),
         }
+    }
+
+    /// Runs each surface's effect chain on its media into ping-pong targets.
+    fn update_effects(&mut self, frame_plan: &RenderPlan, encoder: &mut wgpu::CommandEncoder) {
+        let mut wanted: Vec<(
+            om_types::SurfaceId,
+            MediaId,
+            std::sync::Arc<Vec<om_project::EffectKind>>,
+        )> = Vec::new();
+        for item in &frame_plan.items {
+            if let Some(e) = &item.effects
+                && !wanted.iter().any(|(s, ..)| *s == item.surface)
+            {
+                wanted.push((item.surface, item.media, e.clone()));
+            }
+        }
+        self.fx.retain(|id, _| wanted.iter().any(|(s, ..)| s == id));
+        for (surface, media, effects) in wanted {
+            let passes = crate::effects::passes(effects.iter());
+            let Some(img_size) = self.images.get(&media).map(|i| i.size) else {
+                continue;
+            };
+            if passes.is_empty() {
+                if let Some(fx) = self.fx.get_mut(&surface) {
+                    fx.output = None;
+                }
+                continue;
+            }
+            if !self.fx.get(&surface).is_some_and(|f| f.size == img_size) {
+                let fx = self.create_fx(img_size);
+                self.fx.insert(surface, fx);
+            }
+            while self
+                .fx
+                .get(&surface)
+                .is_some_and(|f| f.uniforms.len() < passes.len())
+            {
+                let u = self.create_fx_uniform();
+                if let Some(f) = self.fx.get_mut(&surface) {
+                    f.uniforms.push(u);
+                }
+            }
+            let (Some(fx), Some(img)) = (self.fx.get(&surface), self.images.get(&media)) else {
+                continue;
+            };
+            let mut input: &wgpu::BindGroup = &img.load_bind;
+            let mut target = 0usize;
+            for (k, pass) in passes.iter().enumerate() {
+                let entry = match pass {
+                    crate::effects::Pass::Color { .. } => "fs_color",
+                    crate::effects::Pass::Invert => "fs_invert",
+                    crate::effects::Pass::BlurH { .. } => "fs_blur_h",
+                    crate::effects::Pass::BlurV { .. } => "fs_blur_v",
+                    crate::effects::Pass::Pixelate { .. } => "fs_pixelate",
+                };
+                let Some(pipeline) = self.fx_pipelines.get(entry) else {
+                    continue;
+                };
+                let (ubuf, ubind) = &fx.uniforms[k];
+                self.gpu.queue().write_buffer(
+                    ubuf,
+                    0,
+                    bytemuck::cast_slice(&crate::effects::uniform(pass)),
+                );
+                let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("om effect"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &fx.views[target],
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                });
+                rp.set_pipeline(pipeline);
+                rp.set_bind_group(0, ubind, &[]);
+                rp.set_bind_group(1, input, &[]);
+                rp.draw(0..3, 0..1);
+                drop(rp);
+                input = &fx.load_binds[target];
+                target = 1 - target;
+            }
+            let out = 1 - target;
+            if let Some(fx) = self.fx.get_mut(&surface) {
+                fx.output = Some(out);
+            }
+        }
+    }
+
+    fn create_fx(&self, size: (u32, u32)) -> SurfaceFx {
+        let device = self.gpu.device();
+        let make = || {
+            let t = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("om effect target"),
+                size: wgpu::Extent3d {
+                    width: size.0,
+                    height: size.1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: WORKING_FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let v = t.create_view(&wgpu::TextureViewDescriptor::default());
+            (t, v)
+        };
+        let (t0, v0) = make();
+        let (t1, v1) = make();
+        let load_binds = [
+            load_bind_group(device, &self.mask_layout, &v0),
+            load_bind_group(device, &self.mask_layout, &v1),
+        ];
+        let media_binds = [
+            texture_bind_group(device, &self.media_layout, &v0, &self.sampler),
+            texture_bind_group(device, &self.media_layout, &v1, &self.sampler),
+        ];
+        SurfaceFx {
+            size,
+            _textures: [t0, t1],
+            views: [v0, v1],
+            load_binds,
+            media_binds,
+            uniforms: Vec::new(),
+            output: None,
+        }
+    }
+
+    fn create_fx_uniform(&self) -> (wgpu::Buffer, wgpu::BindGroup) {
+        let device = self.gpu.device();
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("om effect uniform"),
+            size: FX_UNIFORM_SIZE,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("om effect uniform"),
+            layout: &self.fx_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
+        });
+        (buffer, bind)
     }
 
     /// Rasterises masks that are new or changed; drops masks no longer used.
@@ -956,6 +1196,21 @@ fn texture_layout(device: &wgpu::Device, label: &str) -> wgpu::BindGroupLayout {
                 count: None,
             },
         ],
+    })
+}
+
+fn load_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    view: &wgpu::TextureView,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::TextureView(view),
+        }],
     })
 }
 

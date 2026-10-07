@@ -233,3 +233,40 @@ fn mask_flattening() {
         .is_err()
     );
 }
+
+#[test]
+fn effects_round_trip_and_validate() {
+    use crate::{Effect, EffectKind};
+    let mut p = sample();
+    p.surfaces[0].effects = vec![
+        Effect {
+            enabled: true,
+            kind: EffectKind::neutral_color(),
+        },
+        Effect {
+            enabled: false,
+            kind: EffectKind::Blur {
+                radius: om_types::Finite::new(4.0).unwrap(),
+            },
+        },
+        Effect {
+            enabled: true,
+            kind: EffectKind::Pixelate { size: 8 },
+        },
+        Effect {
+            enabled: true,
+            kind: EffectKind::Invert {},
+        },
+    ];
+    let text = p.to_canonical_json().unwrap();
+    assert!(text.contains(r#""effect": "blur""#), "{text}");
+    let back = Project::from_json(&text).unwrap().project;
+    assert_eq!(back, p);
+    let bad = text.replace(r#""size": 8"#, r#""size": 0"#);
+    assert!(Project::from_json(&bad).is_err());
+    let unknown = text.replace(r#""effect": "invert""#, r#""effect": "invert", "bogus": 1"#);
+    assert!(
+        Project::from_json(&unknown).is_err(),
+        "unknown effect fields are rejected"
+    );
+}

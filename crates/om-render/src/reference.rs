@@ -39,6 +39,27 @@ impl RefImage {
         }
     }
 
+    /// This image after an effect chain (same passes as the GPU).
+    #[must_use]
+    pub fn with_effects(&self, effects: &[om_project::EffectKind]) -> Self {
+        let (w, h) = (self.width as usize, self.height as usize);
+        let mut px: Vec<[f32; 4]> = self
+            .texels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| [c[0], c[1], c[2], c[3]])
+            .collect();
+        for pass in crate::effects::passes(effects.iter()) {
+            px = crate::effects::apply(&pass, &px, w, h);
+        }
+        Self {
+            width: self.width,
+            height: self.height,
+            texels: px.into_iter().flatten().collect(),
+        }
+    }
+
     fn texel(&self, x: i64, y: i64) -> [f32; 4] {
         let x = x.clamp(0, i64::from(self.width) - 1) as usize;
         let y = y.clamp(0, i64::from(self.height) - 1) as usize;
@@ -94,9 +115,17 @@ pub fn render(project: &Project, images: &HashMap<MediaId, RefImage>) -> RefFram
     let n = (w as usize) * (h as usize);
     let mut canvas = vec![[0.0f32; 4]; n];
     let mut coverage = vec![false; n];
+    // Effect output per surface (computed once, shared by its items).
+    let mut processed: HashMap<om_types::SurfaceId, RefImage> = HashMap::new();
     for item in &frame_plan.items {
-        let Some(img) = images.get(&item.media) else {
+        let Some(raw) = images.get(&item.media) else {
             continue;
+        };
+        let img = match &item.effects {
+            Some(effects) => processed
+                .entry(item.surface)
+                .or_insert_with(|| raw.with_effects(effects)),
+            None => raw,
         };
         for py in 0..h {
             for px in 0..w {
