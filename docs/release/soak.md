@@ -22,6 +22,23 @@ Shorter checks that run in CI: the 30-minute compressed DMX stream test
 (M7), the 10-minute no-drift video test in release builds on every OS (M3),
 render-resource stability tests (M2) and the crash-injection test (M9).
 
+## Software soak result (2026-10-07)
+
+`openmapper-cli soak` for 1 hour with the stripped release binary on a
+1280×720 project with three surfaces: an MPEG-4 video loop with blur and an
+ISF effect, a pattern through a WebAssembly plugin with a colour effect,
+and an ISF generator with pixelate. The renderer was the llvmpipe software
+renderer (CPU) in a CI-class container. Result: **pass**.
+
+- 36 955 frames at 10.3 fps. GPU resources were identical from frame 120 to
+  the end.
+- Resident memory was 343 MiB after warm-up and peaked at 361 MiB. The
+  readings fluctuated between 343 and 361 MiB, ending at 358 MiB.
+
+That rise of up to 18 MiB in an hour is well inside the 256 MiB limit. The
+12–24 h reference run should still confirm whether memory flattens or keeps
+creeping, because over 24 hours even a slow rise matters.
+
 ## Reference-system procedure (human)
 
 1. Use the show machine, its GPU and its projectors; the real show project

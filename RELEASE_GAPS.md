@@ -11,7 +11,7 @@ Status of the gate (prompts/10-release.md):
 |---|---|
 | All P0/P1 parity rows verified or waived | **52 of 58 verified**; 6 need hardware (G-01…G-05). 1 P2 row deferred (DeckLink, D-023). |
 | Clean macOS/Windows/Linux package install | Archive + checksum + unpacked-CLI smoke automated (`cargo xtask dist`, `smoke`, CI `package` job). **Blocked** on FFmpeg distribution (G-07) and signing/notarisation (G-08). |
-| 12–24 h reference-system soak | Tooling ready (`openmapper-cli soak`, GPU resources + resident memory); software soak run in CI-class environment (docs/release/soak.md). **Reference-system run pending** (G-09). |
+| 12–24 h reference-system soak | Tooling ready (`openmapper-cli soak`, GPU resources + resident memory); 1-hour software soak passed (stable GPU resources; memory 343→361 MiB peak, to be confirmed flat over 12–24 h; docs/release/soak.md). **Reference-system run pending** (G-09). |
 | Crash/recovery injection tests | Verified: 40 random process kills per run, 600 locally (M9). |
 | Project migration tests | Verified: N-2 chain, v1 compatibility fixture (M9). |
 | Physical projector validation | **Pending** (G-01, G-04). |
