@@ -78,7 +78,10 @@ fn gradient(w: u32, h: u32) -> StillImage {
             px.extend_from_slice(&[
                 (x * 255 / (w - 1)) as u8,
                 (y * 255 / (h - 1)) as u8,
-                ((x * 3 + y * 5) % 256) as u8,
+                // Smooth everywhere: hard edges would measure the driver's
+                // sub-texel filter precision, not the mapping
+                // (tests/tolerances.md).
+                ((x + y) * 255 / (w + h - 2)) as u8,
                 255,
             ]);
         }
