@@ -18,6 +18,7 @@ members = [
     "crates/om-oscquery",
     "crates/om-midi",
     "crates/om-dmx",
+    "crates/om-calibration",
     "crates/om-engine",
     "crates/om-spout",
     "crates/om-ndi",
@@ -60,6 +61,7 @@ om-osc = { path = "crates/om-osc" }
 om-oscquery = { path = "crates/om-oscquery" }
 om-midi = { path = "crates/om-midi" }
 om-dmx = { path = "crates/om-dmx" }
+om-calibration = { path = "crates/om-calibration" }
 om-engine = { path = "crates/om-engine" }
 om-ui-egui = { path = "crates/om-ui-egui" }
 

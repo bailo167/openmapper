@@ -62,6 +62,8 @@ fn published_output_arrives_as_live_media() {
             codec: StreamCodec::Lossless,
             fps: 30,
         }],
+        mapping: Default::default(),
+        projection: None,
         extensions: Default::default(),
     });
     sender.validate().unwrap();

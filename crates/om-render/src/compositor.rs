@@ -51,6 +51,8 @@ pub struct ResourceCounts {
     pub blit_pipelines: usize,
     pub mask_textures: usize,
     pub effect_targets: usize,
+    /// 3-D models uploaded for projected outputs.
+    pub models: usize,
 }
 
 #[repr(C)]
@@ -171,6 +173,12 @@ pub struct Compositor {
     dummy_fx: (wgpu::Buffer, wgpu::BindGroup),
     /// Master gain for presentation (opacity, 0 for blackout).
     master_uniform: (wgpu::Buffer, wgpu::BindGroup),
+    /// Created on first use by [`Compositor::present_mapped`].
+    output_pass: Option<crate::output::OutputPass>,
+    /// 3-D models and their pass (created on first use).
+    projection_pass: Option<crate::projection::ProjectionPass>,
+    /// Master gain of the last render (for passes that apply it directly).
+    master_gain: f32,
 }
 
 impl std::fmt::Debug for Compositor {
@@ -473,6 +481,9 @@ impl Compositor {
             shader_media_tmp: HashMap::new(),
             dummy_fx,
             master_uniform,
+            output_pass: None,
+            projection_pass: None,
+            master_gain: 1.0,
         }
     }
 
@@ -597,6 +608,7 @@ impl Compositor {
         } else {
             project.master.opacity.get() as f32
         };
+        self.master_gain = gain;
         self.gpu.queue().write_buffer(
             &self.master_uniform.0,
             0,
@@ -781,10 +793,169 @@ impl Compositor {
         Ok(())
     }
 
+    /// Uploads (or replaces) a 3-D model under `key` (its project path).
+    pub fn set_model(&mut self, key: &str, mesh: &om_geom::obj::Mesh) {
+        let device = self.gpu.device().clone();
+        let pass = self.projection_pass.get_or_insert_with(|| {
+            crate::projection::ProjectionPass::new(&device, &self.blit_layout)
+        });
+        pass.set_mesh(&device, self.gpu.queue(), key, mesh);
+    }
+
+    pub fn remove_model(&mut self, key: &str) {
+        if let Some(p) = &mut self.projection_pass {
+            p.remove_mesh(key);
+        }
+    }
+
+    #[must_use]
+    pub fn has_model(&self, key: &str) -> bool {
+        self.projection_pass
+            .as_ref()
+            .is_some_and(|p| p.has_mesh(key))
+    }
+
+    /// Draws what `output` shows onto `target` (of `size` pixels): its 3-D
+    /// projection when it has one (black until calibrated and its model is
+    /// loaded), otherwise the canvas through its mapping.
+    pub fn present_output(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        format: wgpu::TextureFormat,
+        size: (u32, u32),
+        output: &om_project::Output,
+    ) -> Result<(), RenderError> {
+        let Some(projection) = &output.projection else {
+            return self.present_mapped(encoder, target, format, &output.mapping);
+        };
+        let canvas = self.canvas.as_ref().ok_or(RenderError::NoCanvas)?;
+        let device = self.gpu.device().clone();
+        let bind = texture_bind_group(&device, &self.blit_layout, &canvas.view, &self.sampler);
+        let pass = self.projection_pass.get_or_insert_with(|| {
+            crate::projection::ProjectionPass::new(&device, &self.blit_layout)
+        });
+        // Uncalibrated: an empty key draws black.
+        let (key, projector) = match &projection.projector {
+            Some(p) => (
+                projection.model.as_str(),
+                om_calibration::Projector::from_params(p),
+            ),
+            None => (
+                "",
+                om_calibration::Projector {
+                    width: 1,
+                    height: 1,
+                    intrinsics: om_calibration::Intrinsics {
+                        fx: 1.0,
+                        fy: 1.0,
+                        cx: 0.0,
+                        cy: 0.0,
+                    },
+                    pose: om_calibration::Pose {
+                        rotation: [0.0; 3],
+                        translation: [0.0; 3],
+                    },
+                },
+            ),
+        };
+        pass.draw(
+            &device,
+            self.gpu.queue(),
+            encoder,
+            target,
+            size,
+            format,
+            &bind,
+            key,
+            &projector,
+            self.master_gain,
+        );
+        Ok(())
+    }
+
+    /// Draws the canvas onto `target` through an output's mapping (region,
+    /// corner pin, soft edges). Identical to [`Self::present`] for the
+    /// identity mapping.
+    pub fn present_mapped(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        format: wgpu::TextureFormat,
+        mapping: &om_project::OutputMapping,
+    ) -> Result<(), RenderError> {
+        if mapping.is_identity() {
+            return self.present(encoder, target, format);
+        }
+        let uniform = crate::output::uniform(mapping)
+            .ok_or_else(|| RenderError::Gpu("output mapping cannot be mapped".into()))?;
+        let device = self.gpu.device().clone();
+        let pass = self.output_pass.get_or_insert_with(|| {
+            crate::output::OutputPass::new(&device, &self.blit_layout, &self.fx_layout)
+        });
+        pass.write(self.gpu.queue(), &uniform);
+        let pipeline = pass.pipeline(&device, format).clone();
+        let canvas = self.canvas.as_ref().ok_or(RenderError::NoCanvas)?;
+        let bind = texture_bind_group(&device, &self.blit_layout, &canvas.view, &self.sampler);
+        let map_bind = self
+            .output_pass
+            .as_ref()
+            .map(|p| p.bind().clone())
+            .ok_or(RenderError::NoCanvas)?;
+        let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("om present mapped"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        rp.set_pipeline(&pipeline);
+        rp.set_bind_group(0, &bind, &[]);
+        rp.set_bind_group(1, &self.master_uniform.1, &[]);
+        rp.set_bind_group(2, &map_bind, &[]);
+        rp.draw(0..3, 0..1);
+        Ok(())
+    }
+
     /// Reads the presented canvas back as 8-bit sRGB RGBA (alpha 255),
     /// row-major, top row first.
     pub fn read_rgba8(&mut self) -> Result<Vec<u8>, RenderError> {
         let (w, h) = self.canvas_size().ok_or(RenderError::NoCanvas)?;
+        self.read_mapped_rgba8(&om_project::OutputMapping::default(), w, h)
+    }
+
+    /// Renders the canvas through `mapping` into a `w × h` output and reads
+    /// it back as 8-bit sRGB RGBA (tests, CLI, snapshots).
+    pub fn read_mapped_rgba8(
+        &mut self,
+        mapping: &om_project::OutputMapping,
+        w: u32,
+        h: u32,
+    ) -> Result<Vec<u8>, RenderError> {
+        self.read_view(View::Mapped(mapping), w, h)
+    }
+
+    /// Renders what `output` shows (3-D projection or mapped canvas) into a
+    /// `w × h` image and reads it back as 8-bit sRGB RGBA.
+    pub fn read_output_rgba8(
+        &mut self,
+        output: &om_project::Output,
+        w: u32,
+        h: u32,
+    ) -> Result<Vec<u8>, RenderError> {
+        self.read_view(View::Output(output), w, h)
+    }
+
+    fn read_view(&mut self, view_kind: View<'_>, w: u32, h: u32) -> Result<Vec<u8>, RenderError> {
+        if w == 0 || h == 0 {
+            return Err(RenderError::NoCanvas);
+        }
         let device = self.gpu.device().clone();
         let format = wgpu::TextureFormat::Rgba8UnormSrgb;
         let target = device.create_texture(&wgpu::TextureDescriptor {
@@ -814,7 +985,12 @@ impl Compositor {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("om readback"),
         });
-        self.present(&mut encoder, &view, format)?;
+        match view_kind {
+            View::Mapped(mapping) => self.present_mapped(&mut encoder, &view, format, mapping)?,
+            View::Output(output) => {
+                self.present_output(&mut encoder, &view, format, (w, h), output)?
+            }
+        }
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
                 texture: &target,
@@ -877,6 +1053,10 @@ impl Compositor {
             blit_pipelines: self.blit_pipelines.len(),
             mask_textures: self.masks.len(),
             effect_targets: self.fx.len(),
+            models: self
+                .projection_pass
+                .as_ref()
+                .map_or(0, crate::projection::ProjectionPass::mesh_count),
         }
     }
 
@@ -1608,4 +1788,11 @@ fn texture_bind_group(
             },
         ],
     })
+}
+
+/// What [`Compositor::read_view`] renders.
+#[derive(Clone, Copy)]
+enum View<'a> {
+    Mapped(&'a om_project::OutputMapping),
+    Output(&'a om_project::Output),
 }

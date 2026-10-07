@@ -56,6 +56,31 @@ enum Action {
         #[arg(long, default_value_t = 0.0)]
         at: f64,
     },
+    /// Render what one output shows (its mapping or 3-D projection) to a PNG.
+    RenderOutput {
+        path: PathBuf,
+        /// Output name or id.
+        #[arg(long)]
+        output: String,
+        #[arg(short, long)]
+        out: PathBuf,
+        /// Output size, e.g. 1920x1080.
+        #[arg(long, default_value = "1920x1080")]
+        size: String,
+        /// Show time in seconds.
+        #[arg(long, default_value_t = 0.0)]
+        at: f64,
+    },
+    /// Fit an output's projector to its stored calibration points and save.
+    Calibrate {
+        path: PathBuf,
+        /// Output name or id.
+        #[arg(long)]
+        output: String,
+        /// Projector resolution, e.g. 1920x1080.
+        #[arg(long, default_value = "1920x1080")]
+        size: String,
+    },
     /// Show FFmpeg version and licence profile of the loaded libraries.
     Ffmpeg,
     /// List connected displays (index order used by outputs).
@@ -215,6 +240,14 @@ fn run(cli: Cli) -> Result<(), String> {
             session.close().map_err(|e| e.to_string())
         }
         Action::Render { path, out, at } => render(&path, &out, at),
+        Action::RenderOutput {
+            path,
+            output,
+            out,
+            size,
+            at,
+        } => render_output(&path, &output, &out, parse_size(&size)?, at),
+        Action::Calibrate { path, output, size } => calibrate(&path, &output, parse_size(&size)?),
         Action::Ffmpeg => {
             om_media_ffmpeg::init()?;
             let info = om_media_ffmpeg::info();
@@ -568,6 +601,124 @@ fn dmx_frame(path: &Path, at: f64, json: bool) -> Result<(), String> {
             println!("{} universe {u}: {}", node_name(*node), values.join(" "));
         }
     }
+    Ok(())
+}
+
+fn parse_size(s: &str) -> Result<(u32, u32), String> {
+    let (w, h) = s
+        .split_once(['x', 'X'])
+        .ok_or_else(|| format!("{s:?} is not a size like 1920x1080"))?;
+    let w: u32 = w
+        .trim()
+        .parse()
+        .map_err(|_| format!("bad width in {s:?}"))?;
+    let h: u32 = h
+        .trim()
+        .parse()
+        .map_err(|_| format!("bad height in {s:?}"))?;
+    if !(1..=16384).contains(&w) || !(1..=16384).contains(&h) {
+        return Err(format!("size {s} is out of range"));
+    }
+    Ok((w, h))
+}
+
+fn find_output<'a>(project: &'a Project, key: &str) -> Result<&'a om_project::Output, String> {
+    project
+        .outputs
+        .iter()
+        .find(|o| o.name == key || o.id.to_string() == key)
+        .ok_or_else(|| format!("no output named {key:?}"))
+}
+
+fn render_output(
+    path: &Path,
+    key: &str,
+    out: &Path,
+    size: (u32, u32),
+    at: f64,
+) -> Result<(), String> {
+    let (project, mut compositor, mut media) = prepare(path)?;
+    let output = find_output(&project, key)?.clone();
+    let t = seconds(at)?;
+    let inputs = load_media(
+        &project,
+        path.parent(),
+        &mut compositor,
+        &mut media,
+        t,
+        true,
+    );
+    if let Some(p) = &output.projection {
+        let file = Path::new(&p.model);
+        let full = match path.parent() {
+            Some(dir) if file.is_relative() => dir.join(file),
+            _ => file.to_path_buf(),
+        };
+        let text = fs::read_to_string(&full).map_err(|e| format!("{}: {e}", full.display()))?;
+        let mesh = om_geom::obj::parse(&text).map_err(|e| format!("{}: {e}", full.display()))?;
+        compositor.set_model(&p.model, &mesh);
+        if p.projector.is_none() {
+            eprintln!("warning: output {key:?} is not calibrated; it renders black");
+        }
+    }
+    compositor
+        .render_with(&project, &inputs)
+        .map_err(|e| e.to_string())?;
+    let pixels = compositor
+        .read_output_rgba8(&output, size.0, size.1)
+        .map_err(|e| e.to_string())?;
+    image::save_buffer(
+        out,
+        &pixels,
+        size.0,
+        size.1,
+        image::ExtendedColorType::Rgba8,
+    )
+    .map_err(|e| format!("writing {}: {e}", out.display()))?;
+    println!(
+        "rendered output {key:?} {}x{} -> {}",
+        size.0,
+        size.1,
+        out.display()
+    );
+    Ok(())
+}
+
+fn calibrate(path: &Path, key: &str, size: (u32, u32)) -> Result<(), String> {
+    let (mut session, report) = Session::open(path).map_err(|e| e.to_string())?;
+    for w in &report.warnings {
+        eprintln!("warning: {w}");
+    }
+    let output = find_output(session.project(), key)?.clone();
+    let mut projection = output
+        .projection
+        .clone()
+        .ok_or_else(|| format!("output {key:?} has no 3-D projection"))?;
+    let fit = om_calibration::calibrate_projection(&projection, size.0, size.1)
+        .map_err(|e| format!("calibration failed: {e}"))?;
+    projection.projector = Some(
+        fit.projector
+            .to_params()
+            .ok_or("calibration produced invalid numbers")?,
+    );
+    session
+        .execute(Command::SetOutputProjection {
+            id: output.id,
+            projection: Some(projection),
+        })
+        .map_err(|e| e.to_string())?;
+    session.save().map_err(|e| e.to_string())?;
+    session.close().map_err(|e| e.to_string())?;
+    let k = fit.projector.intrinsics;
+    println!(
+        "calibrated {key:?} from {} points: RMS {:.3} px, f {:.1}/{:.1}, centre {:.1}, {:.1}",
+        output.projection.map_or(0, |p| p.points.len()),
+        fit.rms_error,
+        k.fx,
+        k.fy,
+        k.cx,
+        k.cy
+    );
     Ok(())
 }
 

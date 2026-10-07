@@ -267,6 +267,8 @@ fn arb_new_command() -> impl Strategy<Value = Command> {
                 enabled: false,
                 display: None,
                 publish: Vec::new(),
+                mapping: Default::default(),
+                projection: None,
                 extensions: Default::default(),
             },
             index: None,

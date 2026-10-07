@@ -248,3 +248,23 @@ DMX **input** (Art-Net/sACN as a control source) is deferred to the
 control work in a later milestone; `dmx monitor` covers diagnostics. The
 physical node test stays pending hardware, so the DMX parity rows are
 verified in software and the node row is implemented-unverified.
+
+## D-025 — Output mapping, soft edges and 3-D calibration (2026-10-07)
+
+Outputs show a canvas **region** through a **corner pin**, two exact
+homographies evaluated per pixel on the GPU directly from the linear
+canvas. A corner pin is the common case and exact; per-output mesh warps
+can follow. Soft edges are symmetric S-curves in **light**, so
+overlapping ramps sum to one, applied to the **signal** with display
+gamma compensation (`w^(1/γ)`, γ default 2.2). 3-D mapping uses
+**OBJ models with UVs**: the canvas is the model's texture, and the
+output renders the model from a **pinhole projector** (no skew, no
+distortion). The projector is calibrated from ≥ 6 non-coplanar 3-D ↔ 2-D
+point pairs: normalised DLT, then RQ, then Levenberg–Marquardt. Planar
+point sets are refused with a clear message rather than calibrated
+wrongly. The maths lives in a new `om-calibration` crate (layer 2), which
+`om-render` may use (same-layer edge allowed). Measured points and the
+fitted projector are both stored in the project for repeatability.
+**Camera-assisted calibration** (structured light) is deferred until a
+camera is available to verify it, as are click-to-pick in output windows
+and lens distortion.

@@ -17,7 +17,9 @@ pub mod compare;
 mod compositor;
 pub mod effects;
 pub mod isf;
+pub mod output;
 mod plan;
+pub mod projection;
 mod readback;
 pub mod reference;
 

@@ -111,6 +111,16 @@ pub enum Command {
         id: OutputId,
         publish: Vec<Publish>,
     },
+    /// Replaces an output's region, corner pin and soft edges.
+    SetOutputMapping {
+        id: OutputId,
+        mapping: om_project::OutputMapping,
+    },
+    /// Sets (`Some`) or removes (`None`) an output's 3-D projection.
+    SetOutputProjection {
+        id: OutputId,
+        projection: Option<om_project::Projection>,
+    },
     SetMaster {
         master: om_project::Master,
     },
@@ -569,6 +579,33 @@ impl Command {
                     events: vec![Event::OutputChanged { id: *id }],
                 })
             }
+            Self::SetOutputMapping { id, mapping } => {
+                let at = output_index(project, *id)?;
+                mapping.validate().map_err(CommandError::Invalid)?;
+                let old = std::mem::replace(&mut project.outputs[at].mapping, mapping.clone());
+                Ok(Applied {
+                    inverse: Self::SetOutputMapping {
+                        id: *id,
+                        mapping: old,
+                    },
+                    events: vec![Event::OutputChanged { id: *id }],
+                })
+            }
+            Self::SetOutputProjection { id, projection } => {
+                let at = output_index(project, *id)?;
+                if let Some(p) = projection {
+                    p.validate().map_err(CommandError::Invalid)?;
+                }
+                let old =
+                    std::mem::replace(&mut project.outputs[at].projection, projection.clone());
+                Ok(Applied {
+                    inverse: Self::SetOutputProjection {
+                        id: *id,
+                        projection: old,
+                    },
+                    events: vec![Event::OutputChanged { id: *id }],
+                })
+            }
             Self::SetMaster { master } => {
                 let old = std::mem::replace(&mut project.master, *master);
                 Ok(Applied {
@@ -823,6 +860,8 @@ impl Command {
             Self::UpdateOutput { .. } => "Edit Output",
             Self::SetOutputDisplay { .. } => "Assign Display",
             Self::SetOutputPublish { .. } => "Publish Settings",
+            Self::SetOutputMapping { .. } => "Output Mapping",
+            Self::SetOutputProjection { .. } => "3D Projection",
             Self::SetExtension { .. } => "Edit Extension",
             Self::SetMaster { .. } => "Master",
             Self::SetControls { .. } => "Control Settings",

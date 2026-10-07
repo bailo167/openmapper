@@ -1,0 +1,32 @@
+# Parity rows for milestone 8. Status ladder: docs/PLAN.md.
+- feature: output.region-and-corner-pin
+  priority: P0
+  status: verified
+  tests: [region_shows_exactly_that_part_of_the_canvas, corner_pin_matches_the_cpu_reference_and_blacks_out_the_rest, exact_fit_from_four_points]
+- feature: output.soft-edge-blend
+  priority: P0
+  status: verified
+  tests: [overlapping_soft_edges_sum_to_full_light, complementary_ramps_sum_to_one_in_light, gamma_compensated_signals_add_up_on_screen, edges_multiply_and_leave_the_centre_alone]
+  notes: Physical two-projector blend check pending a second projector.
+- feature: calibration.projector
+  priority: P0
+  status: verified
+  tests: [noise_free_calibration_is_exact, noisy_calibration_stays_within_bounds, invalid_inputs_are_errors, rq_reconstructs_the_matrix]
+- feature: calibration.repeatable
+  priority: P0
+  status: verified
+  tests: [saved_calibration_is_repeatable, calibrate_then_render_matches_the_true_projector]
+- feature: mapping.3d-model
+  priority: P1
+  status: verified
+  tests: [plane_matches_the_ray_cast_reference, nearer_surfaces_hide_farther_ones, calibrated_render_matches_the_true_projector, uncalibrated_or_missing_models_show_black, parses_quads_negative_indices_and_comments, malformed_files_are_errors_with_line_numbers]
+- feature: calibration.camera-assisted
+  priority: P1
+  status: deferred
+  tests: []
+  notes: DECISIONS.md D-025 — needs a camera for verification.
+- feature: calibration.physical-projector
+  priority: P0
+  status: implemented-unverified
+  tests: []
+  notes: Calibrating against the real projector and object is a human test.

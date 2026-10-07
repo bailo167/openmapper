@@ -107,6 +107,35 @@ means multicast); fixture `address` 1–512 with its first pixel fitting;
 range (Art-Net 0–32767, sACN 1–63999); ids unique; nodes referenced by
 fixtures cannot be removed.
 
+## Output mapping and 3-D projection
+
+Outputs may carry a `mapping` (omitted when it is the identity) and a
+`projection` (see docs/calibration.md):
+
+```json
+{ "id": "…", "name": "Left", "enabled": true,
+  "mapping": {
+    "region": [[0,0],[0.6,0],[0.6,1],[0,1]],
+    "warp":   [[0.02,0.01],[0.99,0],[1,1],[0,0.98]],
+    "soft_edge": { "right": 0.333, "curve": 2.0, "gamma": 2.2 }
+  } }
+
+{ "id": "…", "name": "Stage",
+  "projection": {
+    "model": "models/stage.obj",
+    "projector": { "width": 1920, "height": 1080, "fx": 2210.5, "fy": 2209.8,
+                   "cx": 961.2, "cy": 1012.7,
+                   "rotation": [0.31, -0.52, 0.04], "translation": [0.01, -0.3, 3.02] },
+    "points": [ { "world": [-0.5, -0.5, -0.5], "pixel": [512.25, 288.5] } ]
+  } }
+```
+
+Validation: region and warp must be mappable quads (no three corners
+collinear, no self-intersection); soft-edge widths 0–0.5, curve 1–8,
+gamma 0.5–4; at most 1000 calibration points; projector resolution
+1–16384 and positive focal lengths. When `projection` is set, `mapping`
+is not used.
+
 ## Recovery
 
 Normal save:

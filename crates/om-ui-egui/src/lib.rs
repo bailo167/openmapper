@@ -7,6 +7,7 @@ mod canvas;
 mod dmx_ui;
 mod gpu;
 mod live_ui;
+mod output_ui;
 mod show_ui;
 
 use std::path::PathBuf;
@@ -591,6 +592,8 @@ impl OpenMapperApp {
                         enabled: false,
                         display,
                         publish: Vec::new(),
+                        mapping: Default::default(),
+                        projection: None,
                         extensions: Default::default(),
                     },
                     index: None,
@@ -673,6 +676,8 @@ impl OpenMapperApp {
                     None => {}
                 }
                 self.publish_controls(ui, &o);
+                self.output_mapping_controls(ui, &o);
+                self.output_projection_controls(ui, &o);
             });
         }
     }
@@ -1334,6 +1339,15 @@ impl OpenMapperApp {
                 .display
                 .as_ref()
                 .and_then(|t| om_output::resolve(t, &self.displays))
+            else {
+                continue;
+            };
+            let size = display.native_size();
+            let Some(texture) = self
+                .viewer
+                .as_mut()
+                .and_then(|v| v.output_texture(o, size))
+                .or(Some(texture))
             else {
                 continue;
             };

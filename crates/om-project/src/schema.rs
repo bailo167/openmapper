@@ -938,8 +938,198 @@ pub struct Output {
     /// Also publish this output's frames (independently of the window).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub publish: Vec<Publish>,
+    /// Which part of the canvas this output shows, its corner pin and soft
+    /// edges (default: the whole canvas, unwarped).
+    #[serde(default, skip_serializing_if = "OutputMapping::is_identity")]
+    pub mapping: OutputMapping,
+    /// 3-D mapping: this output shows a model, textured with the canvas
+    /// through the model's UVs, as seen by a calibrated projector. When set,
+    /// `mapping` is not used (docs/calibration.md).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projection: Option<Projection>,
     #[serde(default)]
     pub extensions: Extensions,
+}
+
+/// Most stored calibration point pairs per output.
+pub const MAX_CALIBRATION_POINTS: usize = 1000;
+
+/// A 3-D model seen through a calibrated projector.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Projection {
+    /// Wavefront OBJ file, relative to the project file when possible.
+    pub model: String,
+    /// The fitted projector (absent until calibrated).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projector: Option<ProjectorParams>,
+    /// Measured pairs (model point ↔ projector pixel) the projector was
+    /// fitted to, kept so calibration can be repeated and refined.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub points: Vec<CalibrationPoint>,
+}
+
+/// Pinhole projector parameters (see om-calibration): pixels in a
+/// `width × height` image; world → projector `R x + t` with `R` given as a
+/// Rodrigues vector.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectorParams {
+    pub width: u32,
+    pub height: u32,
+    pub fx: Finite,
+    pub fy: Finite,
+    pub cx: Finite,
+    pub cy: Finite,
+    pub rotation: [Finite; 3],
+    pub translation: [Finite; 3],
+}
+
+/// One measured correspondence.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CalibrationPoint {
+    /// Point on the model (model coordinates).
+    pub world: [Finite; 3],
+    /// Where the projector must draw it (projector pixels).
+    pub pixel: [Finite; 2],
+}
+
+impl Projection {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.model.trim().is_empty() {
+            return Err("projection has no model file".into());
+        }
+        if self.points.len() > MAX_CALIBRATION_POINTS {
+            return Err(format!(
+                "more than {MAX_CALIBRATION_POINTS} calibration points"
+            ));
+        }
+        if let Some(p) = &self.projector {
+            if p.width == 0 || p.height == 0 || p.width > 16384 || p.height > 16384 {
+                return Err("projector resolution is out of range".into());
+            }
+            if p.fx.get() <= 0.0 || p.fy.get() <= 0.0 {
+                return Err("projector focal length must be positive".into());
+            }
+        }
+        Ok(())
+    }
+}
+
+fn unit_quad() -> [Point2; 4] {
+    let p = |x: f64, y: f64| Point2::new(x, y).unwrap_or_default();
+    [p(0.0, 0.0), p(1.0, 0.0), p(1.0, 1.0), p(0.0, 1.0)]
+}
+
+/// How an output shows the canvas (docs/output-mapping.md).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutputMapping {
+    /// Canvas area shown: a quad in canvas space (top-left, top-right,
+    /// bottom-right, bottom-left).
+    #[serde(default = "unit_quad")]
+    pub region: [Point2; 4],
+    /// Where those corners land on the output (corner pin / keystone), in
+    /// output space `[0, 1]²`. Outside it the output is black.
+    #[serde(default = "unit_quad")]
+    pub warp: [Point2; 4],
+    #[serde(default, skip_serializing_if = "SoftEdge::is_none")]
+    pub soft_edge: SoftEdge,
+}
+
+impl Default for OutputMapping {
+    fn default() -> Self {
+        Self {
+            region: unit_quad(),
+            warp: unit_quad(),
+            soft_edge: SoftEdge::default(),
+        }
+    }
+}
+
+impl OutputMapping {
+    #[must_use]
+    pub fn is_identity(&self) -> bool {
+        *self == Self::default()
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        om_geom::Homography::square_to_quad(&self.region)
+            .map_err(|e| format!("output region: {e}"))?;
+        om_geom::Homography::square_to_quad(&self.warp).map_err(|e| format!("output warp: {e}"))?;
+        self.soft_edge.validate()
+    }
+}
+
+/// Soft-edge blend ramps, as fractions of the shown region's width/height
+/// (0–0.5 each). The light weights of overlapping outputs sum to one when
+/// their ramps cover the same canvas area (see om-calibration `blend`).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SoftEdge {
+    #[serde(default)]
+    pub left: Finite,
+    #[serde(default)]
+    pub right: Finite,
+    #[serde(default)]
+    pub top: Finite,
+    #[serde(default)]
+    pub bottom: Finite,
+    /// Ramp shape (1 = linear, 2 = smooth S-curve).
+    #[serde(default = "default_curve")]
+    pub curve: Finite,
+    /// Display gamma the ramp compensates for (≈2.2 for projectors).
+    #[serde(default = "default_gamma")]
+    pub gamma: Finite,
+}
+
+fn default_curve() -> Finite {
+    Finite::new(2.0).unwrap_or(Finite::ZERO)
+}
+
+fn default_gamma() -> Finite {
+    Finite::new(2.2).unwrap_or(Finite::ZERO)
+}
+
+impl Default for SoftEdge {
+    fn default() -> Self {
+        Self {
+            left: Finite::ZERO,
+            right: Finite::ZERO,
+            top: Finite::ZERO,
+            bottom: Finite::ZERO,
+            curve: default_curve(),
+            gamma: default_gamma(),
+        }
+    }
+}
+
+impl SoftEdge {
+    #[must_use]
+    pub fn is_none(&self) -> bool {
+        *self == Self::default()
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        for (name, v) in [
+            ("left", self.left),
+            ("right", self.right),
+            ("top", self.top),
+            ("bottom", self.bottom),
+        ] {
+            if !(0.0..=0.5).contains(&v.get()) {
+                return Err(format!("soft edge {name} {} is not 0–0.5", v.get()));
+            }
+        }
+        if !(1.0..=8.0).contains(&self.curve.get()) {
+            return Err("soft-edge curve must be 1–8".into());
+        }
+        if !(0.5..=4.0).contains(&self.gamma.get()) {
+            return Err("soft-edge gamma must be 0.5–4".into());
+        }
+        Ok(())
+    }
 }
 
 /// How an output identifies its display across sessions and hot-plugs.

@@ -67,6 +67,8 @@ pub const SAME_LAYER_ALLOWED: &[(&str, &str)] = &[
     ("om-surfaces", "om-render"),
     ("om-effects", "om-render"),
     ("om-render", "om-isf"),
+    // 3-D outputs render through calibrated projectors (DECISIONS.md D-025).
+    ("om-render", "om-calibration"),
     ("om-oscquery", "om-osc"),
     ("om-oscquery", "om-show"),
     ("om-osc", "om-show"),

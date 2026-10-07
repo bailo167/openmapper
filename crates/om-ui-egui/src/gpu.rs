@@ -28,6 +28,10 @@ pub struct Viewer {
     render_state: egui_wgpu::RenderState,
     compositor: Compositor,
     preview: Option<Preview>,
+    /// Mapped output images (outputs with a non-identity mapping).
+    outputs: std::collections::HashMap<om_types::OutputId, Preview>,
+    /// 3-D models loaded for projected outputs, or why loading failed.
+    pub models: std::collections::HashMap<String, Result<usize, String>>,
     pub media: MediaRuntime,
     /// Syphon/Spout/NDI/stream publishing of the output frame.
     pub publish: PublishRuntime,
@@ -93,6 +97,8 @@ impl Viewer {
             thumbs: std::collections::HashMap::new(),
             compositor: Compositor::new(gpu),
             preview: None,
+            outputs: std::collections::HashMap::new(),
+            models: std::collections::HashMap::new(),
             media: MediaRuntime::with_audio(adapters.video.clone(), audio)
                 .with_live(adapters.live.clone()),
             publish: PublishRuntime::new(adapters.sinks.clone()),
@@ -133,6 +139,7 @@ impl Viewer {
             show_seconds: show.as_seconds_f64(),
             media_seconds: changes.shader_times.iter().copied().collect(),
         };
+        self.sync_models(project, project_dir);
         let rendered = self.render(project, &inputs);
         self.publish.sync(project);
         self.dmx.sync(project);
@@ -264,45 +271,137 @@ impl Viewer {
     }
 
     fn ensure_preview(&mut self, size: (u32, u32)) {
-        if self.preview.as_ref().is_some_and(|p| p.size == size) {
-            return;
-        }
-        let device = &self.render_state.device;
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("om preview"),
-            size: wgpu::Extent3d {
-                width: size.0,
-                height: size.1,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: PREVIEW_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut renderer = self.render_state.renderer.write();
-        let id = match self.preview.take() {
-            Some(old) => {
-                renderer.update_egui_texture_from_wgpu_texture(
-                    device,
-                    &view,
-                    wgpu::FilterMode::Linear,
-                    old.id,
-                );
-                old.id
-            }
-            None => renderer.register_native_texture(device, &view, wgpu::FilterMode::Linear),
-        };
-        self.preview = Some(Preview {
-            size,
-            texture,
-            view,
-            id,
-        });
+        let mut slot = self.preview.take();
+        ensure_target(&self.render_state, &mut slot, size, "om preview");
+        self.preview = slot;
     }
+
+    /// Loads the OBJ models projected outputs use (once per path) and
+    /// unloads models no output uses any more.
+    fn sync_models(&mut self, project: &Project, project_dir: Option<&std::path::Path>) {
+        let wanted: std::collections::HashSet<&str> = project
+            .outputs
+            .iter()
+            .filter_map(|o| o.projection.as_ref().map(|p| p.model.as_str()))
+            .collect();
+        let stale: Vec<String> = self
+            .models
+            .keys()
+            .filter(|k| !wanted.contains(k.as_str()))
+            .cloned()
+            .collect();
+        for key in stale {
+            self.compositor.remove_model(&key);
+            self.models.remove(&key);
+        }
+        for key in wanted {
+            if self.models.contains_key(key) {
+                continue;
+            }
+            let path = std::path::Path::new(key);
+            let full = match project_dir {
+                Some(dir) if path.is_relative() => dir.join(path),
+                _ => path.to_path_buf(),
+            };
+            let loaded = std::fs::read_to_string(&full)
+                .map_err(|e| format!("{}: {e}", full.display()))
+                .and_then(|text| om_geom::obj::parse(&text).map_err(|e| e.to_string()));
+            let entry = match loaded {
+                Ok(mesh) => {
+                    self.compositor.set_model(key, &mesh);
+                    Ok(mesh.triangles())
+                }
+                Err(e) => Err(e),
+            };
+            self.models.insert(key.to_owned(), entry);
+        }
+    }
+
+    /// Forgets a model so it is read again from disk on the next frame.
+    pub fn reload_model(&mut self, key: &str) {
+        self.compositor.remove_model(key);
+        self.models.remove(key);
+    }
+
+    /// The image `output` should show at `size`, rendered from the latest
+    /// frame: its 3-D projection, or the canvas through its mapping.
+    /// Unmapped outputs share the preview texture.
+    pub fn output_texture(
+        &mut self,
+        output: &om_project::Output,
+        size: (u32, u32),
+    ) -> Option<egui::TextureId> {
+        let id = output.id;
+        if output.projection.is_none() && output.mapping.is_identity() {
+            self.outputs.remove(&id);
+            return self.preview_id();
+        }
+        let size = (size.0.clamp(1, 8192), size.1.clamp(1, 8192));
+        let mut slot = self.outputs.remove(&id);
+        ensure_target(&self.render_state, &mut slot, size, "om output");
+        let target = slot?;
+        let mut encoder =
+            self.render_state
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("om output"),
+                });
+        let ok = self
+            .compositor
+            .present_output(&mut encoder, &target.view, PREVIEW_FORMAT, size, output)
+            .is_ok();
+        self.render_state.queue.submit([encoder.finish()]);
+        let tex = target.id;
+        self.outputs.insert(id, target);
+        ok.then_some(tex)
+    }
+}
+
+/// Creates or resizes a render target registered with egui.
+fn ensure_target(
+    render_state: &egui_wgpu::RenderState,
+    slot: &mut Option<Preview>,
+    size: (u32, u32),
+    label: &str,
+) {
+    if slot.as_ref().is_some_and(|p| p.size == size) {
+        return;
+    }
+    let device = &render_state.device;
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width: size.0,
+            height: size.1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: PREVIEW_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut renderer = render_state.renderer.write();
+    let id = match slot.take() {
+        Some(old) => {
+            renderer.update_egui_texture_from_wgpu_texture(
+                device,
+                &view,
+                wgpu::FilterMode::Linear,
+                old.id,
+            );
+            old.id
+        }
+        None => renderer.register_native_texture(device, &view, wgpu::FilterMode::Linear),
+    };
+    *slot = Some(Preview {
+        size,
+        texture,
+        view,
+        id,
+    });
 }
