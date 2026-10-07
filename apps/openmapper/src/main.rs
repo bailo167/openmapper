@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-//! OpenMapper desktop application. Usage: `openmapper [project.omproj]`
+//! OpenMapper desktop application. Usage: `openmapper [project.omproj] [--play]`
+//! (`--play` starts the show transport immediately, e.g. for unattended shows).
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -8,7 +9,10 @@ use std::sync::Arc;
 use eframe::egui_wgpu::{WgpuConfiguration, WgpuSetup, wgpu};
 
 fn main() -> ExitCode {
-    let path = std::env::args_os().nth(1).map(PathBuf::from);
+    // Usage: openmapper [project.omproj] [--play]
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    let autoplay = args.iter().any(|a| a == "--play");
+    let path = args.into_iter().find(|a| a != "--play").map(PathBuf::from);
     // Ask for the adapter's full limits (eframe defaults to conservative
     // ones), so large canvases and media fit on capable GPUs.
     let mut wgpu_options = WgpuConfiguration::default();
@@ -33,11 +37,11 @@ fn main() -> ExitCode {
         Box::new(|cc| {
             let opener: Arc<dyn om_media_core::VideoOpener> =
                 Arc::new(om_media_ffmpeg::FfmpegOpener);
-            Ok(Box::new(om_ui_egui::OpenMapperApp::new(
-                cc,
-                path,
-                Some(opener),
-            )))
+            let mut app = om_ui_egui::OpenMapperApp::new(cc, path, Some(opener));
+            if autoplay {
+                app.play();
+            }
+            Ok(Box::new(app))
         }),
     );
     match result {

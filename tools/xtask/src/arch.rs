@@ -50,6 +50,7 @@ pub const LAYERS: &[(&str, u8)] = &[
     ("openmapper", 6),
     ("openmapper-cli", 6),
     ("xtask", 6),
+    ("fixturegen", 6),
 ];
 
 /// Same-layer edges that are allowed (from, to).

@@ -1292,6 +1292,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aedcfb3409746eddb02b9e19ebda1c3394f759a152e48ee875a0844d1b955484"
 
 [[package]]
+name = "fixturegen"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "om-media-ffmpeg",
+ "om-time",
+]
+
+[[package]]
 name = "flate2"
 version = "1.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"

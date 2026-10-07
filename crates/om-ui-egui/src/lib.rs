@@ -94,6 +94,11 @@ impl OpenMapperApp {
         app
     }
 
+    /// Starts the show transport.
+    pub fn play(&mut self) {
+        self.transport.play(Instant::now());
+    }
+
     fn info(&mut self, msg: impl Into<String>) {
         self.status = Status {
             message: msg.into(),

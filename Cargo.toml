@@ -16,6 +16,7 @@ members = [
     "apps/openmapper",
     "apps/openmapper-cli",
     "tools/xtask",
+    "tools/fixturegen",
 ]
 
 [workspace.package]
