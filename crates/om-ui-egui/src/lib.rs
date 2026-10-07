@@ -1573,7 +1573,7 @@ fn shader_input_controls(
         let label = input.label.clone().unwrap_or_else(|| input.name.clone());
         let current = values.get(&input.name).cloned();
         match input.kind {
-            InputKind::Image => {}
+            InputKind::Image | InputKind::Audio | InputKind::AudioFft => {}
             InputKind::Float => {
                 let mut x = match current {
                     Some(ShaderValue::Number(n)) => n.get(),

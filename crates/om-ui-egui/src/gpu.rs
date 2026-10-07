@@ -144,6 +144,14 @@ impl Viewer {
             media_seconds: changes.shader_times.iter().copied().collect(),
         };
         self.sync_models(project, project_dir);
+        if let Some(m) = &self.mixer {
+            // For ISF audio inputs; a 1024-point FFT per channel is cheap.
+            let scope = m.scope();
+            self.compositor.set_audio(om_render::audio::AudioFrame {
+                wave: &scope.wave,
+                fft: &scope.fft,
+            });
+        }
         let rendered = self.render(project, &inputs);
         self.publish.sync(project);
         self.dmx.sync(project);

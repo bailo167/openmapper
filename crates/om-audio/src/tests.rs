@@ -54,7 +54,13 @@ fn voice(len: i64, origin: i64, looping: bool, gain: f32) -> Voice {
         )),
         origin,
         gain,
+        speed: 1.0,
     }
+}
+
+fn at_speed(mut v: Voice, speed: f64) -> Voice {
+    v.speed = speed;
+    v
 }
 
 /// Renders, retrying until decode-ahead has caught up (no underrun).
@@ -143,4 +149,39 @@ fn clock_frames_are_exact() {
         Some(480 + 480_000)
     );
     assert_eq!(Clock::Stopped.frame_at(t0, 48_000), None);
+}
+
+#[test]
+fn varispeed_reads_media_at_speed_with_interpolation() {
+    // Ramp value of media frame i is i + 1.
+    let m = Mixer::new(1000);
+    m.set_voices(vec![at_speed(voice(1000, 0, true, 1.0), 2.0)]);
+    assert_eq!(left(&render(&m, 10, 4)), vec![21.0, 23.0, 25.0, 27.0]);
+    m.set_voices(vec![at_speed(voice(1000, 0, true, 1.0), 0.5)]);
+    assert_eq!(left(&render(&m, 10, 4)), vec![6.0, 6.5, 7.0, 7.5]);
+    // Origin is honoured: media frame 0 plays at show frame 100.
+    m.set_voices(vec![at_speed(voice(1000, 100, true, 1.0), 1.5)]);
+    assert_eq!(left(&render(&m, 98, 4)), vec![0.0, 0.0, 1.0, 2.5]);
+}
+
+#[test]
+fn varispeed_loops_and_stops_like_normal_speed() {
+    let m = Mixer::new(1000);
+    // Loop of 100 at speed 2: show frame 49 → media 98, 50 → 100 ≡ 0.
+    m.set_voices(vec![at_speed(voice(100, 0, true, 1.0), 2.0)]);
+    assert_eq!(left(&render(&m, 48, 4)), vec![97.0, 99.0, 1.0, 3.0]);
+    // One-shot of 10 frames at speed 2 ends after show frame 4.
+    m.set_voices(vec![at_speed(voice(10, 0, false, 1.0), 2.0)]);
+    let out = left(&render(&m, 0, 8));
+    assert_eq!(&out[..5], &[1.0, 3.0, 5.0, 7.0, 9.0]);
+    assert!(out[5..].iter().all(|v| *v == 0.0), "{out:?}");
+}
+
+#[test]
+fn zero_and_reverse_speeds_are_silent() {
+    let m = Mixer::new(1000);
+    for speed in [0.0, -1.0, f64::NAN] {
+        m.set_voices(vec![at_speed(voice(1000, 0, true, 1.0), speed)]);
+        assert!(render(&m, 10, 8).iter().all(|s| *s == 0.0), "speed {speed}");
+    }
 }

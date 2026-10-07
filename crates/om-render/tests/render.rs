@@ -766,6 +766,49 @@ fn shader_generator_media_renders() {
 }
 
 #[test]
+fn shader_audio_inputs_see_wave_and_spectrum() {
+    let Some(g) = gpu() else { return };
+    let mut c = Compositor::new(g);
+    let (path, compiled) = corpus_shader("audio.fs");
+    let id = MediaId::from_u128(201);
+    let mut pr = project(16, 4, vec![]);
+    pr.media.push(Media {
+        id,
+        name: "audio".into(),
+        source: MediaSource::Shader {
+            path: path.clone(),
+            inputs: Default::default(),
+        },
+        playback: Default::default(),
+        plugins: Vec::new(),
+        extensions: Default::default(),
+    });
+    pr.surfaces.push(surface(1, Shape::full_quad(), id));
+    c.set_shader(&path, &compiled);
+    // No audio yet: blank textures.
+    c.render(&pr).unwrap();
+    let px = c.read_rgba8().unwrap();
+    assert_eq!(&px[..3], &[0, 0, 0], "blank before audio");
+    // Left channel (row 0) is a ramp; the right channel must not be read.
+    let ramp: Vec<f32> = (0..16).map(|i| i as f32 / 15.0).collect();
+    let wave = vec![ramp.iter().map(|v| 2.0 * v - 1.0).collect(), vec![1.0; 16]];
+    let fft = vec![ramp.clone(), vec![1.0; 16]];
+    c.set_audio(om_render::audio::AudioFrame {
+        wave: &wave,
+        fft: &fft,
+    });
+    c.render(&pr).unwrap();
+    let px = c.read_rgba8().unwrap();
+    for (i, p) in px.as_chunks::<4>().0[..16].iter().enumerate() {
+        let want = (ramp[i] * 255.0).round() as u8;
+        assert!(p[0].abs_diff(want) <= 1, "wave {i}: {p:?} vs {want}");
+        assert!(p[1].abs_diff(want) <= 1, "fft {i}: {p:?} vs {want}");
+        // IMG_SIZE(spectrum).x / 1024 = 16 / 1024 → code 4.
+        assert!(p[2].abs_diff(4) <= 1, "size {i}: {p:?}");
+    }
+}
+
+#[test]
 fn shader_effect_filters_the_chain() {
     let Some(g) = gpu() else { return };
     let mut c = Compositor::new(g);

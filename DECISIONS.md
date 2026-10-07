@@ -302,3 +302,20 @@ versions exist; a v1 compatibility fixture using every feature must keep
 loading. Missing media is relinked by file name from a folder the user
 chooses, preferring candidates whose parent folders match, in one undo
 step.
+
+## D-027 — Varispeed audio and ISF audio inputs (2026-10-07)
+
+Audio at speeds other than 1× now plays **varispeed** (tape/turntable
+behaviour: pitch follows speed), resampled with linear interpolation on
+the same `(show − origin) × speed` timeline as the video, so picture and
+sound stay together at any speed up to 16×. Reverse and zero speeds are
+silent. This supersedes D-015's "muted at non-1×". Pitch-preserving time
+stretching is a known difference from tools that offer it; it can be
+added later as an option behind the same timeline.
+
+ISF `audio` and `audioFFT` inputs read the mixer output: 512 waveform
+samples (stored `0.5 + 0.5 × s`) and 512 spectrum bins (1024-point Hann
+FFT, full-scale sine = 1) per channel, one texture row per channel with
+channel 0 at the bottom (ISF's bottom-left origin). Sizes are fixed;
+`MAX` is ignored. The FFT is computed on the UI thread from a copy of the
+analyser's ring, never inside the audio callback lock.

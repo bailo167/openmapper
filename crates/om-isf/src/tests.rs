@@ -93,3 +93,15 @@ fn dialect_rewrites() {
     assert!(c.glsl.contains("void isf_user_main()"));
     assert!(!c.glsl.contains("gl_FragColor"));
 }
+
+#[test]
+fn audio_inputs_bind_as_textures() {
+    let doc = parse(&corpus("audio.fs")).unwrap();
+    assert_eq!(doc.inputs[0].kind, InputKind::Audio);
+    assert_eq!(doc.inputs[1].kind, InputKind::AudioFft);
+    assert!(!doc.is_filter());
+    assert_eq!(doc.image_names(), vec!["wave", "spectrum"]);
+    let c = compile(&doc).unwrap();
+    assert_eq!(c.images, vec!["wave", "spectrum"]);
+    assert!(c.field("wave").is_none(), "no uniform for a texture input");
+}

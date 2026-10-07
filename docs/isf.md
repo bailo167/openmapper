@@ -31,8 +31,24 @@ corpus (`crates/om-isf/tests/corpus`) consists of original minimal shaders.
 | Multipass with TARGET, WIDTH/HEIGHT expressions (`$WIDTH/2`, functions) | yes |
 | PERSISTENT buffers (feedback) | yes |
 | Additional image inputs other than `inputImage` | bound transparent (not yet assignable) |
-| audio / audioFFT inputs, IMPORTED images, custom vertex shaders (`.vs`) | not yet |
+| audio / audioFFT inputs (the playing audio; see below) | yes |
+| IMPORTED images, custom vertex shaders (`.vs`) | not yet |
 | DATE values | zeros |
+
+## Audio inputs
+
+`audio` and `audioFFT` inputs see what OpenMapper is playing (the mixer
+output), updated every frame. Each is an image with one row per channel
+(left at the bottom, `y` near 0; right at the top):
+
+- `audio`: the newest 512 samples per channel, oldest on the left, stored
+  as `0.5 + 0.5 × sample` (silence reads 0.5).
+- `audioFFT`: 512 magnitude bins per channel from 0 Hz to just below
+  Nyquist (1024-point Hann window); a full-scale sine reads 1.
+
+The value is in R, G and B; alpha is 1. `MAX` on these inputs is ignored
+(the sizes above are fixed; `IMG_SIZE` reports them). Without an audio
+device they read blank (zero).
 
 ## Colour
 

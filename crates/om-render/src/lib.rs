@@ -12,6 +12,7 @@
 //! [`reference`] is an independent CPU implementation of the same maths used
 //! to check GPU output in golden tests.
 
+pub mod audio;
 mod colour;
 pub mod compare;
 mod compositor;

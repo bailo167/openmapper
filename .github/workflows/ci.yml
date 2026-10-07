@@ -39,6 +39,8 @@ jobs:
       - name: system libraries for eframe and FFmpeg
         run: sudo apt-get update && sudo apt-get install -y pkg-config clang libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev libavfilter-dev libavdevice-dev libasound2-dev libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev libxcb1-dev libxcb-randr0-dev mesa-vulkan-drivers
       - run: cargo xtask ci
+      - name: long-running media checks (10 min of video without drift)
+        run: cargo test --release --locked -p om-media-ffmpeg --test decode -- --ignored ten_minutes_without_drift
 
   gate-b:
     name: gate B (${{ matrix.os }})
@@ -71,3 +73,5 @@ jobs:
           Join-Path $dir "bin" | Out-File -Append $env:GITHUB_PATH
       - run: cargo build --workspace --all-targets --locked
       - run: cargo test --workspace --locked
+      - name: long-running media checks (10 min of video without drift)
+        run: cargo test --release --locked -p om-media-ffmpeg --test decode -- --ignored ten_minutes_without_drift

@@ -9,9 +9,9 @@
   known_differences: []
 - feature: media.video.no-drift
   priority: P0
-  status: verified-macos
+  status: verified
   tests: [ten_minutes_without_drift]
-  notes: 35,994 display ticks over 10 min at 29.97 fps, one seek. Nightly gate C.
+  notes: 35,994 display ticks over 10 min at 29.97 fps, one seek. Release-build CI step on Linux, macOS and Windows.
 - feature: media.loop-speed-reverse
   priority: P0
   status: verified
@@ -28,12 +28,15 @@
   notes: Device output verified manually on macOS (built-in speakers); CI has no audio devices.
 - feature: media.audio.speed
   priority: P1
-  status: gap
-  notes: Audio muted at non-1x speed until time-stretching exists (D-015).
+  status: verified
+  tests: [varispeed_reads_media_at_speed_with_interpolation, varispeed_loops_and_stops_like_normal_speed, zero_and_reverse_speeds_are_silent]
+  notes: Varispeed (pitch follows speed) up to 16x; reverse is silent; no pitch-preserving stretch (known difference, D-027).
 - feature: media.corrupt-and-missing
   priority: P0
   status: verified
   tests: [corrupt_and_missing_files_fail_cleanly, missing_files_and_missing_opener_are_reported]
 - feature: media.thumbnails
   priority: P1
-  status: implemented
+  status: verified
+  tests: [thumbnails_fit_and_average]
+  notes: Aspect-preserving box downscale; the GUI refreshes live thumbnails at most twice a second.

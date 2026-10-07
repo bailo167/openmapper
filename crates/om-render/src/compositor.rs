@@ -171,6 +171,8 @@ pub struct Compositor {
     shader_media_tmp: HashMap<MediaId, IsfTemps>,
     /// Uniform bound to effect passes that need none.
     dummy_fx: (wgpu::Buffer, wgpu::BindGroup),
+    /// Audio for ISF `audio` / `audioFFT` inputs.
+    audio: crate::audio::AudioTextures,
     /// Master gain for presentation (opacity, 0 for blackout).
     master_uniform: (wgpu::Buffer, wgpu::BindGroup),
     /// Created on first use by [`Compositor::present_mapped`].
@@ -480,6 +482,7 @@ impl Compositor {
             shader_errors: HashMap::new(),
             shader_media_tmp: HashMap::new(),
             dummy_fx,
+            audio: crate::audio::AudioTextures::default(),
             master_uniform,
             output_pass: None,
             projection_pass: None,
@@ -1150,7 +1153,8 @@ impl Compositor {
                         .iter()
                         .map(|(n, v)| (n.clone(), crate::effects::isf_value(v)))
                         .collect();
-                    let images = HashMap::from([("inputImage".to_owned(), &temps.in_view)]);
+                    let mut images = HashMap::from([("inputImage".to_owned(), &temps.in_view)]);
+                    self.audio.bind(program.compiled(), &mut images);
                     if program
                         .render(
                             &self.gpu,
@@ -1222,6 +1226,12 @@ impl Compositor {
                 self.shader_errors.insert(path.to_owned(), e.to_string());
             }
         }
+    }
+
+    /// Uploads the audio that ISF `audio` / `audioFFT` inputs see (call
+    /// once per frame; until then they read blank).
+    pub fn set_audio(&mut self, frame: crate::audio::AudioFrame<'_>) {
+        self.audio.upload(&self.gpu, frame);
     }
 
     /// Loads (or reloads) a compiled shader; existing users restart.
@@ -1306,6 +1316,8 @@ impl Compositor {
                 .iter()
                 .map(|(n, v)| (n.clone(), crate::effects::isf_value(v)))
                 .collect();
+            let mut images = HashMap::new();
+            self.audio.bind(program.compiled(), &mut images);
             if program
                 .render(
                     &self.gpu,
@@ -1314,7 +1326,7 @@ impl Compositor {
                         size,
                         time,
                         values: &values,
-                        images: &HashMap::new(),
+                        images: &images,
                         output: &tmp.out_view,
                     },
                 )

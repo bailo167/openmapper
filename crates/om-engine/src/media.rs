@@ -602,15 +602,14 @@ impl MediaRuntime {
         }
     }
 
-    /// Hands the mixer one voice per audible soundtrack. Only normal speed
-    /// is audible (D-015).
+    /// Hands the mixer one voice per audible soundtrack (varispeed at
+    /// speeds other than 1; reverse is silent, D-027).
     fn publish_voices(&self, project: &Project) {
         let Some(setup) = &self.audio else { return };
         let rate = setup.mixer.rate();
         let voices = project
             .media
             .iter()
-            .filter(|m| m.playback.speed == Speed::NORMAL)
             .filter_map(|m| {
                 let e = self.entries.get(&m.id)?;
                 let Ok(Content::Player { audio: Some(a), .. }) = &e.content else {
@@ -622,6 +621,7 @@ impl MediaRuntime {
                     origin: i64::try_from(e.restart_at.to_ticks_floor(i128::from(rate)).ok()?)
                         .ok()?,
                     gain: m.playback.volume.get() as f32,
+                    speed: m.playback.speed.as_f64(),
                 })
             })
             .collect();

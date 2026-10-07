@@ -56,6 +56,18 @@ pub enum InputKind {
     Point2D,
     Color,
     Image,
+    /// Audio waveform as an image: one row per channel (ISF `audio`).
+    Audio,
+    /// Audio spectrum as an image: one row per channel (ISF `audioFFT`).
+    AudioFft,
+}
+
+impl InputKind {
+    /// True for inputs bound as textures (image and audio inputs).
+    #[must_use]
+    pub fn is_texture(self) -> bool {
+        matches!(self, Self::Image | Self::Audio | Self::AudioFft)
+    }
 }
 
 /// One declared input.
@@ -109,13 +121,13 @@ impl IsfDoc {
             .any(|i| i.kind == InputKind::Image && i.name == "inputImage")
     }
 
-    /// Image inputs followed by pass targets, in binding order.
+    /// Image and audio inputs followed by pass targets, in binding order.
     #[must_use]
     pub fn image_names(&self) -> Vec<String> {
         let mut out: Vec<String> = self
             .inputs
             .iter()
-            .filter(|i| i.kind == InputKind::Image)
+            .filter(|i| i.kind.is_texture())
             .map(|i| i.name.clone())
             .collect();
         for p in &self.passes {
@@ -228,6 +240,8 @@ pub fn parse(source: &str) -> Result<IsfDoc, IsfError> {
             "point2D" => InputKind::Point2D,
             "color" => InputKind::Color,
             "image" => InputKind::Image,
+            "audio" => InputKind::Audio,
+            "audioFFT" => InputKind::AudioFft,
             other => {
                 return Err(IsfError::UnsupportedInput {
                     name: raw.name,

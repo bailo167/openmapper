@@ -145,7 +145,7 @@ pub fn compile(doc: &IsfDoc) -> Result<Compiled, IsfError> {
             InputKind::Long | InputKind::Bool | InputKind::Event => UniformKind::Int,
             InputKind::Point2D => UniformKind::Vec2,
             InputKind::Color => UniformKind::Vec4,
-            InputKind::Image => continue,
+            InputKind::Image | InputKind::Audio | InputKind::AudioFft => continue,
         };
         push(&i.name, kind);
     }
