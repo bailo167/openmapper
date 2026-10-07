@@ -36,6 +36,8 @@ pub struct Viewer {
     pub audio_status: String,
     pub last_frame: Option<FrameReport>,
     pub last_error: Option<String>,
+    ctx: egui::Context,
+    thumbs: std::collections::HashMap<om_types::MediaId, (egui::TextureHandle, std::time::Instant)>,
 }
 
 impl std::fmt::Debug for Viewer {
@@ -48,6 +50,7 @@ impl std::fmt::Debug for Viewer {
 
 impl Viewer {
     pub fn new(
+        ctx: &egui::Context,
         render_state: &egui_wgpu::RenderState,
         opener: Option<Arc<dyn VideoOpener>>,
         audio_opener: Option<Arc<dyn AudioOpener>>,
@@ -82,6 +85,8 @@ impl Viewer {
         );
         Self {
             render_state: render_state.clone(),
+            ctx: ctx.clone(),
+            thumbs: std::collections::HashMap::new(),
             compositor: Compositor::new(gpu),
             preview: None,
             media: MediaRuntime::with_audio(opener, audio),
@@ -131,12 +136,51 @@ impl Viewer {
     fn apply_media(&mut self, changes: &om_engine::MediaChanges) {
         for id in &changes.unload {
             self.compositor.remove_image(*id);
+            self.thumbs.remove(id);
         }
         for (id, img) in &changes.upload {
             if let Err(e) = self.compositor.set_image(*id, img) {
                 self.last_error = Some(e.to_string());
             }
+            self.update_thumbnail(*id, img);
         }
+    }
+
+    /// Live thumbnail, refreshed at most twice a second.
+    fn update_thumbnail(&mut self, id: om_types::MediaId, img: &om_media_core::StillImage) {
+        const REFRESH: std::time::Duration = std::time::Duration::from_millis(500);
+        if self
+            .thumbs
+            .get(&id)
+            .is_some_and(|(_, t)| t.elapsed() < REFRESH)
+        {
+            return;
+        }
+        let t = img.thumbnail(96);
+        let color = egui::ColorImage::from_rgba_unmultiplied(
+            [t.width() as usize, t.height() as usize],
+            t.rgba8(),
+        );
+        let now = std::time::Instant::now();
+        match self.thumbs.get_mut(&id) {
+            Some((handle, at)) => {
+                handle.set(color, egui::TextureOptions::LINEAR);
+                *at = now;
+            }
+            None => {
+                let handle = self.ctx.load_texture(
+                    format!("thumb-{id}"),
+                    color,
+                    egui::TextureOptions::LINEAR,
+                );
+                self.thumbs.insert(id, (handle, now));
+            }
+        }
+    }
+
+    /// Thumbnail texture for a media item, once it has pixels.
+    pub fn thumbnail(&self, id: om_types::MediaId) -> Option<&egui::TextureHandle> {
+        self.thumbs.get(&id).map(|(h, _)| h)
     }
 
     fn render(&mut self, project: &Project) -> Result<egui::TextureId, String> {

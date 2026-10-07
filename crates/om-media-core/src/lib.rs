@@ -144,6 +144,40 @@ impl StillImage {
         Self::from_rgba8(width, height, img.into_raw())
     }
 
+    /// A downscaled copy whose longer side is at most `max_side` pixels
+    /// (box filter, sRGB-encoded averaging; for UI thumbnails only).
+    #[must_use]
+    pub fn thumbnail(&self, max_side: u32) -> Self {
+        let max_side = max_side.max(1);
+        let scale = (self.width.max(self.height)).div_ceil(max_side).max(1);
+        let (w, h) = (self.width.div_ceil(scale), self.height.div_ceil(scale));
+        let mut px = Vec::with_capacity((w * h * 4) as usize);
+        for ty in 0..h {
+            for tx in 0..w {
+                let mut acc = [0u32; 4];
+                let mut n = 0u32;
+                for y in ty * scale..((ty + 1) * scale).min(self.height) {
+                    for x in tx * scale..((tx + 1) * scale).min(self.width) {
+                        if let Some(p) = self.pixel(x, y) {
+                            for k in 0..4 {
+                                acc[k] += u32::from(p[k]);
+                            }
+                            n += 1;
+                        }
+                    }
+                }
+                let n = n.max(1);
+                #[allow(clippy::cast_possible_truncation)]
+                px.extend(acc.iter().map(|a| (a / n) as u8));
+            }
+        }
+        Self {
+            width: w,
+            height: h,
+            rgba8: px,
+        }
+    }
+
     /// Generates a built-in pattern at the given size.
     pub fn pattern(kind: PatternKind, width: u32, height: u32) -> Result<Self, MediaError> {
         if width == 0 || height == 0 {
@@ -242,5 +276,20 @@ mod tests {
     fn from_rgba8_checks_length() {
         assert!(StillImage::from_rgba8(2, 2, vec![0; 15]).is_err());
         assert!(StillImage::from_rgba8(2, 2, vec![0; 16]).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod thumbnail_tests {
+    use super::*;
+
+    #[test]
+    fn thumbnails_fit_and_average() {
+        let img = StillImage::pattern(PatternKind::Checkerboard, 1920, 1080).unwrap();
+        let t = img.thumbnail(64);
+        assert!(t.width() <= 64 && t.height() <= 64);
+        assert_eq!((t.width(), t.height()), (64, 36), "keeps 16:9");
+        let one = StillImage::from_rgba8(1, 1, vec![9, 8, 7, 255]).unwrap();
+        assert_eq!(one.thumbnail(64).rgba8(), &[9, 8, 7, 255]);
     }
 }

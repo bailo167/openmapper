@@ -70,7 +70,7 @@ impl OpenMapperApp {
             viewer: cc
                 .wgpu_render_state
                 .as_ref()
-                .map(|rs| Viewer::new(rs, opener, audio_opener)),
+                .map(|rs| Viewer::new(&cc.egui_ctx, rs, opener, audio_opener)),
             selected: None,
             path_input: String::from("untitled.omproj"),
             media_path_input: String::new(),
@@ -433,6 +433,11 @@ impl OpenMapperApp {
                     None => {
                         ui.label("•");
                     }
+                }
+                if let Some(t) = self.viewer.as_ref().and_then(|v| v.thumbnail(m.id)) {
+                    let size = t.size_vec2();
+                    let scale = 32.0 / size.y.max(1.0);
+                    ui.image((t.id(), size * scale));
                 }
                 let label = ui.label(&m.name);
                 if let Some(summary) = status.as_ref().and_then(|s| s.summary.clone()) {
