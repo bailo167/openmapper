@@ -20,6 +20,7 @@ fn fixture(dir: &Path, codec: FixtureCodec, rate: Rate, frames: u32) -> PathBuf 
             rate,
             frames,
             codec,
+            audio_rate: None,
         },
     )
     .unwrap();
@@ -198,6 +199,7 @@ fn ten_minutes_without_drift() {
             rate,
             frames,
             codec: FixtureCodec::Mpeg4Mp4,
+            audio_rate: None,
         },
     )
     .unwrap();

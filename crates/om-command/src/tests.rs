@@ -197,6 +197,7 @@ fn arb_new_command() -> impl Strategy<Value = Command> {
                 playback: om_project::Playback {
                     looping,
                     speed: om_time::Speed::new(n, 4).unwrap(),
+                    volume: UnitInterval::new(0.5).unwrap(),
                 },
             }
         }),

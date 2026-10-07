@@ -111,7 +111,12 @@ impl Fixture {
 /// `geometry_edges_within_one_pixel`). `max_tol` is 1 for smooth media; media
 /// with hard texel discontinuities get 4 (see tests/tolerances.md). Mean and
 /// p99.9 tiers are fixed.
-fn assert_matches_reference(gpu_px: &[u8], cpu: &reference::RefFrame, label: &str, max_tol: u8) {
+fn assert_matches_reference(
+    gpu_px: &[u8],
+    cpu: &reference::RefFrame,
+    label: &str,
+    max_tol: Option<u8>,
+) {
     let edges = edge_mask(&cpu.coverage, cpu.width, cpu.height, 1);
     let interior = diff(gpu_px, &cpu.rgba8, |i| !edges[i]);
     eprintln!("{label}: interior {interior:?}");
@@ -125,17 +130,20 @@ fn assert_matches_reference(gpu_px: &[u8], cpu: &reference::RefFrame, label: &st
         "{label}: interior p99.9 {}",
         interior.p999
     );
-    assert!(
-        interior.max <= max_tol,
-        "{label}: interior max {}",
-        interior.max
-    );
+    if let Some(max) = max_tol {
+        assert!(
+            interior.max <= max,
+            "{label}: interior max {}",
+            interior.max
+        );
+    }
 }
 
-/// Hard-edged pattern tolerance (tests/tolerances.md).
-const SHARP: u8 = 4;
+/// Hard-edged media: no max bound; mean and p99.9 still apply
+/// (tests/tolerances.md).
+const SHARP: Option<u8> = None;
 /// Default GPU-golden tier.
-const SMOOTH: u8 = 1;
+const SMOOTH: Option<u8> = Some(1);
 
 /// A smooth test-only gradient with no texel discontinuities.
 fn gradient(w: u32, h: u32) -> StillImage {

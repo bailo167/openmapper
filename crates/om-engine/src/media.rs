@@ -8,7 +8,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use om_media_core::{DEFAULT_QUEUE, ImageSequence, StillImage, VideoOpener, VideoPlayer};
+use om_audio::{Mixer, Voice};
+use om_media_core::{
+    AudioOpener, AudioPlayer, DEFAULT_QUEUE, ImageSequence, StillImage, VideoOpener, VideoPlayer,
+};
 use om_project::{MediaSource, Playback, Project};
 use om_time::{RationalTime, Speed};
 use om_types::MediaId;
@@ -111,6 +114,50 @@ pub fn media_time(
     }
 }
 
+/// Time to request from a media player: like [`media_time`], but for looping
+/// media the time is left *unwrapped* so the player can run seamlessly into
+/// the next pass.
+#[must_use]
+pub fn player_time(
+    show: RationalTime,
+    restart_at: RationalTime,
+    playback: Playback,
+    duration: Option<RationalTime>,
+) -> RationalTime {
+    if playback.looping && duration.is_some_and(|d| d.ticks() > 0) {
+        show.checked_sub(restart_at)
+            .and_then(|d| d.checked_mul_speed(playback.speed))
+            .unwrap_or(RationalTime::ZERO)
+    } else {
+        media_time(show, restart_at, playback, duration)
+    }
+}
+
+/// Audio playback wiring for a [`MediaRuntime`].
+#[derive(Clone)]
+pub struct AudioSetup {
+    pub opener: Arc<dyn AudioOpener>,
+    pub mixer: Mixer,
+}
+
+impl std::fmt::Debug for AudioSetup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "AudioSetup({} Hz)", self.mixer.rate())
+    }
+}
+
+/// Show-clock snapshot for the audio mixer at `rate`.
+#[must_use]
+pub fn audio_clock(transport: &Transport, rate: u32) -> om_audio::Clock {
+    match *transport {
+        Transport::Paused { .. } => om_audio::Clock::Stopped,
+        Transport::Playing { since, base } => om_audio::Clock::Playing {
+            since,
+            base: i64::try_from(base.to_ticks_floor(i128::from(rate)).unwrap_or(0)).unwrap_or(0),
+        },
+    }
+}
+
 /// Resolves a stored media path against the project directory.
 #[must_use]
 pub fn resolve_media_path(project_dir: Option<&Path>, stored: &str) -> PathBuf {
@@ -154,12 +201,15 @@ impl MediaChanges {
     }
 }
 
-type Key = (MediaSource, Option<PathBuf>, (u32, u32));
+/// Source, resolved path, pattern size, looping (players are rebuilt when
+/// any of these change).
+type Key = (MediaSource, Option<PathBuf>, (u32, u32), bool);
 
 enum Content {
     Still(Arc<StillImage>),
     Player {
         player: Box<VideoPlayer>,
+        audio: Option<Arc<AudioPlayer>>,
         duration: Option<RationalTime>,
         shown: Option<RationalTime>,
     },
@@ -186,6 +236,7 @@ pub struct MediaStatus {
 /// Keeps decoded media in sync with the project and the show clock.
 pub struct MediaRuntime {
     opener: Option<Arc<dyn VideoOpener>>,
+    audio: Option<AudioSetup>,
     entries: HashMap<MediaId, Entry>,
     last_retry: Option<Instant>,
 }
@@ -207,8 +258,16 @@ impl MediaRuntime {
     /// error and everything else still works.
     #[must_use]
     pub fn new(opener: Option<Arc<dyn VideoOpener>>) -> Self {
+        Self::with_audio(opener, None)
+    }
+
+    /// Like [`MediaRuntime::new`], also playing video soundtracks through
+    /// `audio`'s mixer.
+    #[must_use]
+    pub fn with_audio(opener: Option<Arc<dyn VideoOpener>>, audio: Option<AudioSetup>) -> Self {
         Self {
             opener,
+            audio,
             entries: HashMap::new(),
             last_retry: None,
         }
@@ -307,7 +366,7 @@ impl MediaRuntime {
             self.last_retry = Some(Instant::now());
         }
         for m in &project.media {
-            let key = entry_key(&m.source, project_dir, canvas);
+            let key = entry_key(&m.source, project_dir, canvas, m.playback.looping);
             let stale = self
                 .entries
                 .get(&m.id)
@@ -344,9 +403,10 @@ impl MediaRuntime {
                 player,
                 duration,
                 shown,
+                ..
             }) = &mut entry.content
             {
-                let t = media_time(show, entry.restart_at, m.playback, *duration);
+                let t = player_time(show, entry.restart_at, m.playback, *duration);
                 let frame = match wait {
                     Some(timeout) => player.frame_at_blocking(t, timeout),
                     None => player.frame_at(t),
@@ -359,10 +419,37 @@ impl MediaRuntime {
                 }
             }
         }
+        self.publish_voices(project);
         changes.upload.sort_by_key(|(id, _)| *id);
         changes.unload.sort();
         changes.unload.dedup();
         changes
+    }
+
+    /// Hands the mixer one voice per audible soundtrack. Only normal speed
+    /// is audible (D-015).
+    fn publish_voices(&self, project: &Project) {
+        let Some(setup) = &self.audio else { return };
+        let rate = setup.mixer.rate();
+        let voices = project
+            .media
+            .iter()
+            .filter(|m| m.playback.speed == Speed::NORMAL)
+            .filter_map(|m| {
+                let e = self.entries.get(&m.id)?;
+                let Ok(Content::Player { audio: Some(a), .. }) = &e.content else {
+                    return None;
+                };
+                #[allow(clippy::cast_possible_truncation)]
+                Some(Voice {
+                    player: Arc::clone(a),
+                    origin: i64::try_from(e.restart_at.to_ticks_floor(i128::from(rate)).ok()?)
+                        .ok()?,
+                    gain: m.playback.volume.get() as f32,
+                })
+            })
+            .collect();
+        setup.mixer.set_voices(voices);
     }
 
     fn load(&self, key: &Key) -> Result<Content, String> {
@@ -377,7 +464,7 @@ impl MediaRuntime {
             }
             (MediaSource::Sequence { rate, .. }, Some(path)) => {
                 let seq = ImageSequence::open(path, *rate).map_err(|e| e.to_string())?;
-                Ok(player_content(seq))
+                Ok(player_content(seq, key.3, None))
             }
             (MediaSource::Video { .. }, Some(path)) => {
                 let opener = self
@@ -388,33 +475,76 @@ impl MediaRuntime {
                     return Err(format!("{}: file not found", path.display()));
                 }
                 let src = opener.open_video(path).map_err(|e| e.to_string())?;
-                Ok(player_content(src))
+                let duration = src.descriptor().duration;
+                let audio = self.open_audio(path, duration, key.3);
+                Ok(player_content(src, key.3, audio))
             }
             (src, None) => Err(format!("{src:?}: unresolved path")),
         }
     }
 }
 
-fn player_content<S: om_media_core::MediaSource + 'static>(source: S) -> Content {
+impl MediaRuntime {
+    /// Opens a video's soundtrack for the mixer, if audio is configured and
+    /// the file has one. Audio errors never prevent the video from playing.
+    fn open_audio(
+        &self,
+        path: &Path,
+        duration: Option<RationalTime>,
+        looping: bool,
+    ) -> Option<Arc<AudioPlayer>> {
+        let setup = self.audio.as_ref()?;
+        let rate = setup.mixer.rate();
+        let src = setup.opener.open_audio(path, rate).ok()??;
+        let loop_frames = if looping {
+            duration
+                .and_then(|d| d.to_ticks_floor(i128::from(rate)).ok())
+                .and_then(|f| i64::try_from(f).ok())
+        } else {
+            None
+        };
+        let ahead = usize::try_from(rate / 2).unwrap_or(24_000);
+        Some(Arc::new(AudioPlayer::spawn_looping(
+            src,
+            ahead,
+            loop_frames,
+        )))
+    }
+}
+
+fn player_content<S: om_media_core::MediaSource + 'static>(
+    source: S,
+    looping: bool,
+    audio: Option<Arc<AudioPlayer>>,
+) -> Content {
     let duration = source.descriptor().duration;
+    let loop_len = if looping { duration } else { None };
     Content::Player {
-        player: Box::new(VideoPlayer::spawn(
+        player: Box::new(VideoPlayer::spawn_looping(
             source,
             RationalTime::ZERO,
             DEFAULT_QUEUE,
+            loop_len,
         )),
+        audio,
         duration,
         shown: None,
     }
 }
 
-fn entry_key(source: &MediaSource, project_dir: Option<&Path>, canvas: (u32, u32)) -> Key {
+fn entry_key(
+    source: &MediaSource,
+    project_dir: Option<&Path>,
+    canvas: (u32, u32),
+    looping: bool,
+) -> Key {
     match source {
-        MediaSource::Pattern { .. } => (source.clone(), None, canvas),
+        MediaSource::Pattern { .. } => (source.clone(), None, canvas, false),
         _ => (
             source.clone(),
             source.path().map(|p| resolve_media_path(project_dir, p)),
             (0, 0),
+            looping && source.is_time_based(),
         ),
     }
 }

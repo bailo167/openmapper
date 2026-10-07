@@ -40,6 +40,25 @@ pub struct FixtureSpec {
     pub rate: Rate,
     pub frames: u32,
     pub codec: FixtureCodec,
+    /// Adds a stereo audio track at this rate: silence with a 10 ms 1 kHz
+    /// burst starting exactly on every whole second (see [`audio_sample`]).
+    /// PCM in MKV, AAC in MP4.
+    pub audio_rate: Option<u32>,
+}
+
+/// The fixture audio signal at sample `n`.
+#[must_use]
+#[allow(clippy::cast_precision_loss)]
+pub fn audio_sample(n: u64, rate: u32) -> f32 {
+    let in_second = n % u64::from(rate);
+    if in_second < u64::from(rate / 100) {
+        let t = in_second as f64 / f64::from(rate);
+        #[allow(clippy::cast_possible_truncation)]
+        let v = (0.5 * (2.0 * std::f64::consts::PI * 1000.0 * t).sin()) as f32;
+        v
+    } else {
+        0.0
+    }
 }
 
 const BITS: u32 = 16;
@@ -105,8 +124,15 @@ pub fn write_index_video(path: &Path, spec: FixtureSpec) -> Result<(), String> {
     ost.set_parameters(&enc);
     ost.set_time_base(tb);
     ost.set_avg_frame_rate(ff::Rational::new(tb.denominator(), tb.numerator()));
+    let mut audio = match spec.audio_rate {
+        Some(rate) => Some(AudioTrack::add(&mut octx, spec.codec, rate, global_header)?),
+        None => None,
+    };
     octx.write_header().map_err(e)?;
     let ost_tb = octx.stream(0).ok_or("no output stream")?.time_base();
+    if let Some(a) = &mut audio {
+        a.stream_tb = octx.stream(1).ok_or("no audio stream")?.time_base();
+    }
 
     let drain = |enc: &mut ff::encoder::Video,
                  octx: &mut ff::format::context::Output|
@@ -143,6 +169,118 @@ pub fn write_index_video(path: &Path, spec: FixtureSpec) -> Result<(), String> {
     }
     enc.send_eof().map_err(e)?;
     drain(&mut enc, &mut octx)?;
+    if let Some(a) = &mut audio {
+        // Audio covers the same duration as the video.
+        let total = u64::from(spec.frames)
+            * u64::from(a.rate)
+            * u64::try_from(spec.rate.den()).unwrap_or(1)
+            / u64::try_from(spec.rate.num()).unwrap_or(1);
+        a.write(&mut octx, total)?;
+    }
     octx.write_trailer().map_err(e)?;
     Ok(())
+}
+
+struct AudioTrack {
+    enc: ff::encoder::Audio,
+    rate: u32,
+    format: ff::format::Sample,
+    frame_size: usize,
+    stream_tb: ff::Rational,
+}
+
+impl AudioTrack {
+    fn add(
+        octx: &mut ff::format::context::Output,
+        codec: FixtureCodec,
+        rate: u32,
+        global_header: bool,
+    ) -> Result<Self, String> {
+        let e = |e: ff::Error| e.to_string();
+        let id = match codec {
+            FixtureCodec::Ffv1Mkv => ff::codec::Id::PCM_S16LE,
+            FixtureCodec::Mpeg4Mp4 => ff::codec::Id::AAC,
+        };
+        let c = ff::encoder::find(id).ok_or("audio encoder not available")?;
+        let mut ost = octx.add_stream(c).map_err(e)?;
+        let mut enc = ff::codec::context::Context::new_with_codec(c)
+            .encoder()
+            .audio()
+            .map_err(e)?;
+        let format = match id {
+            ff::codec::Id::AAC => ff::format::Sample::F32(ff::format::sample::Type::Planar),
+            _ => ff::format::Sample::I16(ff::format::sample::Type::Packed),
+        };
+        #[allow(clippy::cast_possible_wrap)]
+        enc.set_rate(rate as i32);
+        enc.set_format(format);
+        enc.set_channel_layout(ff::ChannelLayout::STEREO);
+        enc.set_time_base(ff::Rational::new(1, i32::try_from(rate).unwrap_or(48_000)));
+        enc.set_bit_rate(192_000);
+        if global_header {
+            enc.set_flags(ff::codec::Flags::GLOBAL_HEADER);
+        }
+        let enc = enc.open_as(c).map_err(e)?;
+        ost.set_parameters(&enc);
+        let frame_size = match enc.frame_size() {
+            0 => 1024,
+            n => n as usize,
+        };
+        Ok(Self {
+            enc,
+            rate,
+            format,
+            frame_size,
+            stream_tb: ff::Rational::new(1, 1000),
+        })
+    }
+
+    fn write(&mut self, octx: &mut ff::format::context::Output, total: u64) -> Result<(), String> {
+        let e = |e: ff::Error| e.to_string();
+        let enc_tb = ff::Rational::new(1, i32::try_from(self.rate).unwrap_or(48_000));
+        let mut n: u64 = 0;
+        while n < total {
+            let len = usize::try_from((total - n).min(self.frame_size as u64)).unwrap_or(0);
+            let mut frame = ff::frame::Audio::new(self.format, len, ff::ChannelLayout::STEREO);
+            frame.set_rate(self.rate);
+            match self.format {
+                ff::format::Sample::F32(ff::format::sample::Type::Planar) => {
+                    for ch in 0..2 {
+                        let plane = frame.plane_mut::<f32>(ch);
+                        for (i, s) in plane.iter_mut().enumerate().take(len) {
+                            *s = audio_sample(n + i as u64, self.rate);
+                        }
+                    }
+                }
+                _ => {
+                    let data = frame.plane_mut::<(i16, i16)>(0);
+                    for (i, s) in data.iter_mut().enumerate().take(len) {
+                        #[allow(clippy::cast_possible_truncation)]
+                        let v = (audio_sample(n + i as u64, self.rate) * 32767.0) as i16;
+                        *s = (v, v);
+                    }
+                }
+            }
+            frame.set_pts(Some(i64::try_from(n).unwrap_or(0)));
+            self.enc.send_frame(&frame).map_err(e)?;
+            self.drain(octx, enc_tb)?;
+            n += len as u64;
+        }
+        self.enc.send_eof().map_err(e)?;
+        self.drain(octx, enc_tb)
+    }
+
+    fn drain(
+        &mut self,
+        octx: &mut ff::format::context::Output,
+        enc_tb: ff::Rational,
+    ) -> Result<(), String> {
+        let mut packet = ff::Packet::empty();
+        while self.enc.receive_packet(&mut packet).is_ok() {
+            packet.set_stream(1);
+            packet.rescale_ts(enc_tb, self.stream_tb);
+            packet.write_interleaved(octx).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
 }

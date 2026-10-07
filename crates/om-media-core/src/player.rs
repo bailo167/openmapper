@@ -97,6 +97,19 @@ impl VideoPlayer {
         start: RationalTime,
         capacity: usize,
     ) -> Self {
+        Self::spawn_looping(source, start, capacity, None)
+    }
+
+    /// Like [`VideoPlayer::spawn`], looping every `loop_len`. Times are then
+    /// on an unwrapped timeline (`k·len + t` is time `t` of pass `k`) and the
+    /// decoder runs on into the next pass, so loop points do not stall.
+    pub fn spawn_looping<S: MediaSource + 'static>(
+        source: S,
+        start: RationalTime,
+        capacity: usize,
+        loop_len: Option<RationalTime>,
+    ) -> Self {
+        let loop_len = loop_len.filter(|l| l.ticks() > 0);
         let descriptor = source.descriptor().clone();
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
@@ -114,7 +127,7 @@ impl VideoPlayer {
         let worker = Arc::clone(&shared);
         let thread = std::thread::Builder::new()
             .name("om-decode".into())
-            .spawn(move || decode_loop(source, &worker))
+            .spawn(move || decode_loop(source, &worker, loop_len))
             .ok();
         if thread.is_none() {
             shared.lock().error = Some("could not start decoder thread".into());
@@ -233,9 +246,11 @@ impl Drop for VideoPlayer {
     }
 }
 
-fn decode_loop<S: MediaSource>(source: S, shared: &Shared) {
+fn decode_loop<S: MediaSource>(source: S, shared: &Shared, loop_len: Option<RationalTime>) {
     let mut cursor = FrameCursor::new(source);
     let mut generation = 0;
+    // Unwrapped start time of the current pass.
+    let mut pass = RationalTime::ZERO;
     loop {
         // Wait for work: a reposition, or room in the queue.
         let (target, gen_now) = {
@@ -256,18 +271,38 @@ fn decode_loop<S: MediaSource>(source: S, shared: &Shared) {
             }
             (st.target, st.generation)
         };
-        let result = if gen_now != generation {
+        let mut result = if gen_now != generation {
             generation = gen_now;
-            cursor.frame_at(target).map(|f| f.cloned())
+            pass = loop_len
+                .and_then(|len| {
+                    target
+                        .rem_euclid(len)
+                        .ok()
+                        .and_then(|r| target.checked_sub(r).ok())
+                })
+                .unwrap_or(RationalTime::ZERO);
+            let local = target.checked_sub(pass).unwrap_or(target);
+            cursor.frame_at(local).map(|f| f.cloned())
         } else {
             cursor.advance().map(|f| f.cloned())
         };
+        // End of a looping pass: continue with the next one.
+        if let (Ok(None), Some(len)) = (&result, loop_len)
+            && let Ok(next) = pass.checked_add(len)
+        {
+            pass = next;
+            result = cursor.frame_at(RationalTime::ZERO).map(|f| f.cloned());
+        }
         let mut st = shared.lock();
         if st.generation != generation {
             continue; // a newer jump arrived while decoding; discard
         }
         match result {
-            Ok(Some(frame)) => {
+            Ok(Some(mut frame)) => {
+                frame.pts = frame.pts.checked_add(pass).unwrap_or(frame.pts);
+                if loop_len.is_some() {
+                    frame.duration = None; // the next pass may follow sooner
+                }
                 // frame_at may return the same frame that is already queued.
                 if st.queue.back().is_none_or(|b| b.pts != frame.pts) {
                     st.queue.push_back(frame);
@@ -395,6 +430,39 @@ mod tests {
             Some(25)
         );
         assert!(p.stats().misses > 0);
+    }
+
+    #[test]
+    fn looping_playback_wraps_without_jumps() {
+        let rate = Rate::FPS_25;
+        let len = RationalTime::from_frame(30, rate).unwrap();
+        let mut p = VideoPlayer::spawn_looping(
+            Counter::new(30, Duration::ZERO),
+            RationalTime::ZERO,
+            4,
+            Some(len),
+        );
+        // Play straight through three passes, frame by frame.
+        for i in 0..90 {
+            let t = RationalTime::from_frame(i, rate).unwrap();
+            assert_eq!(
+                red(p.frame_at_blocking(t, Duration::from_secs(5))),
+                Some((i % 30) as u8),
+                "frame {i}"
+            );
+        }
+        assert_eq!(
+            p.stats().jumps,
+            0,
+            "wraps must not reposition: {:?}",
+            p.stats()
+        );
+        // Jumping into a later pass lands on the right frame.
+        let t = RationalTime::from_frame(30 * 7 + 12, rate).unwrap();
+        assert_eq!(
+            red(p.frame_at_blocking(t, Duration::from_secs(5))),
+            Some(12)
+        );
     }
 
     #[test]

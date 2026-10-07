@@ -49,6 +49,7 @@ fn media_time_loops_clamps_and_reverses() {
     let pb = |looping, n, den| Playback {
         looping,
         speed: Speed::new(n, den).unwrap(),
+        ..Playback::default()
     };
     let s = RationalTime::from_seconds;
     assert_eq!(media_time(s(25), s(0), pb(true, 1, 1), d), s(5));
@@ -259,7 +260,7 @@ fn sequences_play_from_folders() {
         },
         Playback {
             looping: false,
-            speed: Speed::NORMAL,
+            ..Playback::default()
         },
     ));
     let mut rtm = MediaRuntime::new(None);

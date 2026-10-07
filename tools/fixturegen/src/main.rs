@@ -25,6 +25,9 @@ struct Args {
     /// mpeg4 (MP4, B-frames) or ffv1 (lossless MKV).
     #[arg(long, default_value = "mpeg4")]
     codec: String,
+    /// Add an audio track at this sample rate (1 kHz burst every second).
+    #[arg(long)]
+    audio: Option<u32>,
 }
 
 fn parse_pair(s: &str, sep: char) -> Option<(i64, i64)> {
@@ -47,6 +50,7 @@ fn run(a: Args) -> Result<(), String> {
         rate,
         frames: a.frames,
         codec,
+        audio_rate: a.audio,
     };
     write_index_video(&a.out, spec)?;
     println!(

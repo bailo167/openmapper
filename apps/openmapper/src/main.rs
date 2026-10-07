@@ -37,7 +37,9 @@ fn main() -> ExitCode {
         Box::new(|cc| {
             let opener: Arc<dyn om_media_core::VideoOpener> =
                 Arc::new(om_media_ffmpeg::FfmpegOpener);
-            let mut app = om_ui_egui::OpenMapperApp::new(cc, path, Some(opener));
+            let audio: Arc<dyn om_media_core::AudioOpener> =
+                Arc::new(om_media_ffmpeg::FfmpegOpener);
+            let mut app = om_ui_egui::OpenMapperApp::new(cc, path, Some(opener), Some(audio));
             if autoplay {
                 app.play();
             }

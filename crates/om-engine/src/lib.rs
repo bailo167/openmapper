@@ -11,8 +11,8 @@ mod media;
 use std::path::{Path, PathBuf};
 
 pub use media::{
-    MediaChanges, MediaRuntime, MediaStatus, Transport, media_time, path_for_storage,
-    resolve_media_path, speed_percent,
+    AudioSetup, MediaChanges, MediaRuntime, MediaStatus, Transport, audio_clock, media_time,
+    path_for_storage, player_time, resolve_media_path, speed_percent,
 };
 
 use om_command::{Command, CommandError, CommandResult, Document, HistoryError};

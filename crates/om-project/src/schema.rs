@@ -95,15 +95,19 @@ pub struct Media {
 }
 
 /// How time-based media plays.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Playback {
     /// Restart at the end (or wrap at the start when reversed).
     #[serde(default = "default_true")]
     pub looping: bool,
-    /// Exact playback speed; negative plays in reverse.
+    /// Exact playback speed; negative plays in reverse. Audio plays only at
+    /// normal speed (DECISIONS.md D-015).
     #[serde(default)]
     pub speed: Speed,
+    /// Audio gain (linear).
+    #[serde(default)]
+    pub volume: UnitInterval,
 }
 
 impl Default for Playback {
@@ -111,6 +115,7 @@ impl Default for Playback {
         Self {
             looping: true,
             speed: Speed::NORMAL,
+            volume: UnitInterval::ONE,
         }
     }
 }

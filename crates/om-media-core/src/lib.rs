@@ -6,6 +6,7 @@
 //! straight (non-premultiplied) alpha, row-major, top row first; the renderer
 //! converts to linear premultiplied on upload.
 
+mod audio;
 mod player;
 mod sequence;
 mod source;
@@ -14,6 +15,7 @@ use std::path::Path;
 
 use om_project::PatternKind;
 
+pub use audio::{AudioOpener, AudioPlayer, AudioSource};
 pub use player::{DEFAULT_QUEUE, PlayerStats, VideoPlayer};
 pub use sequence::ImageSequence;
 pub use source::{

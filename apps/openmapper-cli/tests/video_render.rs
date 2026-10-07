@@ -25,6 +25,7 @@ fn render_at_selects_exact_video_frame() {
             rate: Rate::FPS_25,
             frames: 100,
             codec: FixtureCodec::Mpeg4Mp4,
+            audio_rate: None,
         },
     )
     .unwrap();

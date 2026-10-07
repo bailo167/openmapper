@@ -106,3 +106,30 @@ allow-list. Linking is dynamic via pkg-config (`FFMPEG_DIR` on Windows). CI
 uses distro FFmpeg on Linux, Homebrew on macOS and BtbN's LGPL shared build on
 Windows. Homebrew's FFmpeg is a GPL build — acceptable for development only;
 `om_media_ffmpeg::info().licence` reports it and the release audit rejects it.
+
+## D-014 — Audio positions from containers, snapped to the packet grid (2026-10-07)
+
+Audio is decoded to interleaved stereo `f32` at the output device rate via
+libswresample (called directly through `swr_convert`; the frame-based wrapper
+rejected Matroska PCM with unspecified channel order). Sample positions come
+from the first packet timestamp after open/seek, then count contiguously.
+Where the container time base is coarser than one sample (Matroska: 1 ms),
+the first position is snapped to the codec's fixed packet grid. Measured:
+PCM onsets exact; 44.1→48 kHz and AAC within 2 samples; seeks sample-exact.
+
+## D-015 — Audio sync and loop model (2026-10-07)
+
+The show clock is master. Each device callback renders the block for the
+predicted show position and stays sample-contiguous; drift beyond 20 ms
+re-syncs (a small discontinuity) rather than resampling — adequate for
+minutes-long shows; an adaptive resampler is a later improvement. Audio plays
+only at 1× speed (muted otherwise) until time-stretching exists. Video and
+audio players loop on an *unwrapped* timeline (pass k, time t ↦ k·len + t),
+so the decoder runs on into the next pass and loop points neither stall video
+nor drop audio. Verified end to end (decode → runtime → mixer) across loop
+passes.
+
+## D-016 — Smaller dev builds (2026-10-07)
+
+Dev profile keeps line tables only, and no debug info for dependencies
+(target dir 13 GB → 1.9 GB on the dev machine, which was nearly out of disk).

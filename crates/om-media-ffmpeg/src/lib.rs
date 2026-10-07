@@ -7,16 +7,29 @@
 //! [`licence_profile`] reports what the loaded libraries were built with so
 //! diagnostics and the release audit can check it (docs/media/ffmpeg.md).
 
+mod audio;
 mod video;
 
 #[cfg(feature = "fixtures")]
 pub mod fixtures;
 
+pub use audio::FfmpegAudio;
 pub use video::FfmpegVideo;
 
 /// [`om_media_core::VideoOpener`] backed by FFmpeg.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct FfmpegOpener;
+
+impl om_media_core::AudioOpener for FfmpegOpener {
+    fn open_audio(
+        &self,
+        path: &std::path::Path,
+        rate: u32,
+    ) -> Result<Option<Box<dyn om_media_core::AudioSource>>, om_media_core::MediaError> {
+        Ok(FfmpegAudio::open(path, rate)?
+            .map(|a| Box::new(a) as Box<dyn om_media_core::AudioSource>))
+    }
+}
 
 impl om_media_core::VideoOpener for FfmpegOpener {
     fn open_video(

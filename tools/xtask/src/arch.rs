@@ -62,6 +62,7 @@ pub const SAME_LAYER_ALLOWED: &[(&str, &str)] = &[
     ("om-render", "om-gpu"),
     // The renderer consumes decoded media frames (DECISIONS.md D-010).
     ("om-render", "om-media-core"),
+    ("om-audio", "om-media-core"),
     ("om-surfaces", "om-render"),
     ("om-effects", "om-render"),
     ("om-isf", "om-render"),

@@ -12,10 +12,12 @@ om-types.workspace = true
 om-project.workspace = true
 om-command.workspace = true
 om-media-core.workspace = true
+om-audio.workspace = true
 om-time.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+om-media-ffmpeg = { workspace = true, features = ["fixtures"] }
 image.workspace = true
 tempfile.workspace = true
 

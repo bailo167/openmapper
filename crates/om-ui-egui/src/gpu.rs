@@ -7,9 +7,9 @@ use eframe::egui;
 use eframe::egui_wgpu::{self, wgpu};
 use std::sync::Arc;
 
-use om_engine::MediaRuntime;
+use om_engine::{AudioSetup, MediaRuntime, Transport, audio_clock};
 use om_gpu::GpuContext;
-use om_media_core::VideoOpener;
+use om_media_core::{AudioOpener, VideoOpener};
 use om_project::Project;
 use om_render::{Compositor, FrameReport};
 use om_time::RationalTime;
@@ -30,6 +30,10 @@ pub struct Viewer {
     compositor: Compositor,
     preview: Option<Preview>,
     pub media: MediaRuntime,
+    mixer: Option<om_audio::Mixer>,
+    _audio_out: Option<om_audio::Output>,
+    /// Audio device in use, or why audio is unavailable.
+    pub audio_status: String,
     pub last_frame: Option<FrameReport>,
     pub last_error: Option<String>,
 }
@@ -46,7 +50,31 @@ impl Viewer {
     pub fn new(
         render_state: &egui_wgpu::RenderState,
         opener: Option<Arc<dyn VideoOpener>>,
+        audio_opener: Option<Arc<dyn AudioOpener>>,
     ) -> Self {
+        // Audio is optional: a machine without an output device still maps.
+        let (mixer, audio_out, audio_status) =
+            match audio_opener.as_ref().map(|_| om_audio::default_rate()) {
+                None => (None, None, "audio disabled".to_owned()),
+                Some(Err(e)) => (None, None, format!("no audio: {e}")),
+                Some(Ok(rate)) => {
+                    let mixer = om_audio::Mixer::new(rate);
+                    match om_audio::Output::open(mixer.clone()) {
+                        Ok(out) => {
+                            let status = format!("audio: {} @ {} Hz", out.device_name, out.rate);
+                            (Some(mixer), Some(out), status)
+                        }
+                        Err(e) => (None, None, format!("no audio: {e}")),
+                    }
+                }
+            };
+        let audio = match (&mixer, audio_opener) {
+            (Some(m), Some(o)) => Some(AudioSetup {
+                opener: o,
+                mixer: m.clone(),
+            }),
+            _ => None,
+        };
         let gpu = GpuContext::from_parts(
             render_state.adapter.clone(),
             render_state.device.clone(),
@@ -56,7 +84,10 @@ impl Viewer {
             render_state: render_state.clone(),
             compositor: Compositor::new(gpu),
             preview: None,
-            media: MediaRuntime::new(opener),
+            media: MediaRuntime::with_audio(opener, audio),
+            mixer,
+            _audio_out: audio_out,
+            audio_status,
             last_frame: None,
             last_error: None,
         }
@@ -78,7 +109,11 @@ impl Viewer {
         project: &Project,
         project_dir: Option<&std::path::Path>,
         show: RationalTime,
+        transport: &Transport,
     ) -> Option<egui::TextureId> {
+        if let Some(m) = &self.mixer {
+            m.set_clock(audio_clock(transport, m.rate()));
+        }
         let changes = self.media.update(project, project_dir, show);
         self.apply_media(&changes);
         match self.render(project) {

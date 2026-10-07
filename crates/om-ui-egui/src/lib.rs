@@ -14,7 +14,7 @@ use om_command::Command;
 use std::sync::Arc;
 
 use om_engine::{OpenReport, Session, Transport, path_for_storage};
-use om_media_core::VideoOpener;
+use om_media_core::{AudioOpener, VideoOpener};
 use om_output::Display;
 use om_project::{Canvas, Media, MediaSource, Output, PatternKind, Playback, Shape, Surface};
 use om_time::{Rate, RationalTime, Speed};
@@ -63,13 +63,14 @@ impl OpenMapperApp {
         cc: &eframe::CreationContext<'_>,
         path: Option<PathBuf>,
         opener: Option<Arc<dyn VideoOpener>>,
+        audio_opener: Option<Arc<dyn AudioOpener>>,
     ) -> Self {
         let mut app = Self {
             session: Session::new("Untitled"),
             viewer: cc
                 .wgpu_render_state
                 .as_ref()
-                .map(|rs| Viewer::new(rs, opener)),
+                .map(|rs| Viewer::new(rs, opener, audio_opener)),
             selected: None,
             path_input: String::from("untitled.omproj"),
             media_path_input: String::new(),
@@ -451,6 +452,28 @@ impl OpenMapperApp {
                             playback: pb,
                         });
                     }
+                    let mut vol = pb.volume.get();
+                    let resp = ui.add(
+                        egui::DragValue::new(&mut vol)
+                            .range(0.0..=1.0)
+                            .speed(0.01)
+                            .prefix("vol "),
+                    );
+                    if resp.changed() {
+                        self.queue_coalescing(
+                            Command::SetMediaPlayback {
+                                id: m.id,
+                                playback: Playback {
+                                    volume: om_types::UnitInterval::saturating(vol),
+                                    ..pb
+                                },
+                            },
+                            format!("volume:{}", m.id),
+                        );
+                    }
+                    if resp.drag_stopped() || resp.lost_focus() {
+                        self.end_coalescing = true;
+                    }
                     let mut percent = pb.speed.num() * 100 / pb.speed.den();
                     let resp = ui.add(
                         egui::DragValue::new(&mut percent)
@@ -594,6 +617,7 @@ impl OpenMapperApp {
             if let Some(v) = &self.viewer {
                 ui.separator();
                 ui.weak(v.gpu_summary());
+                ui.weak(&v.audio_status);
             }
             return;
         };
@@ -717,6 +741,7 @@ impl OpenMapperApp {
                 self.session.project(),
                 project_dir.as_deref(),
                 self.transport.time(Instant::now()),
+                &self.transport,
             ),
             None => None,
         };
