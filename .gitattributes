@@ -1,0 +1,6 @@
+# Byte-exact files on every OS: project goldens and fixtures must not be
+# converted to CRLF on Windows checkouts.
+* text=auto eol=lf
+*.omproj text eol=lf
+*.png binary
+*.jpg binary
