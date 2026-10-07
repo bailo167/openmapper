@@ -10,12 +10,11 @@ use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand};
 use om_command::Command;
-use std::sync::Arc;
 
 use om_engine::{MediaRuntime, Session};
 use om_gpu::GpuContext;
-use om_media_core::VideoOpener;
-use om_project::{Project, store};
+use om_media_core::{LiveFeed, LiveState};
+use om_project::{LiveInput, Project, store};
 use om_render::Compositor;
 use om_time::RationalTime;
 
@@ -68,6 +67,27 @@ enum Action {
         path: PathBuf,
         #[arg(long, default_value_t = 60)]
         seconds: u64,
+    },
+    /// Live inputs: list what is available, or test one.
+    Live {
+        #[command(subcommand)]
+        action: LiveAction,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum LiveAction {
+    /// List connected cameras and announced senders.
+    List,
+    /// Receive from an input for a while and report its format and rate.
+    Probe {
+        /// Camera name, stream URL, or `ndi:NAME`, `syphon:NAME`, `spout:NAME`.
+        input: String,
+        #[arg(long, default_value_t = 5)]
+        seconds: u64,
+        /// Save the last frame as a PNG.
+        #[arg(long)]
+        png: Option<PathBuf>,
     },
 }
 
@@ -182,6 +202,93 @@ fn run(cli: Cli) -> Result<(), String> {
             Ok(())
         }
         Action::Soak { path, seconds } => soak(&path, seconds),
+        Action::Live { action } => live(action),
+    }
+}
+
+/// Parses a probe argument into a live input.
+fn parse_live(s: &str) -> LiveInput {
+    if let Some(n) = s.strip_prefix("ndi:") {
+        LiveInput::Ndi { source: n.into() }
+    } else if let Some(n) = s.strip_prefix("syphon:") {
+        LiveInput::Syphon {
+            server: n.into(),
+            app: String::new(),
+        }
+    } else if let Some(n) = s.strip_prefix("spout:") {
+        LiveInput::Spout { sender: n.into() }
+    } else if s.contains("://") {
+        LiveInput::Stream { url: s.into() }
+    } else {
+        LiveInput::Camera { device: s.into() }
+    }
+}
+
+fn live(action: LiveAction) -> Result<(), String> {
+    let adapters = om_platform::adapters();
+    let opener = adapters
+        .live
+        .ok_or("live inputs are not available in this build")?;
+    match action {
+        LiveAction::List => {
+            let inputs = opener.discover();
+            if inputs.is_empty() {
+                println!("no cameras or senders found");
+            }
+            for i in inputs {
+                println!("{}", i.label());
+            }
+            Ok(())
+        }
+        LiveAction::Probe {
+            input,
+            seconds,
+            png,
+        } => {
+            let input = parse_live(&input);
+            input.validate()?;
+            println!("probing {}", input.label());
+            let feed = LiveFeed::spawn(opener, input);
+            let deadline = Instant::now() + Duration::from_secs(seconds);
+            let mut last = None;
+            let mut seen = 0;
+            while Instant::now() < deadline {
+                if let Some(f) = feed.wait_newer_than(seen, Duration::from_millis(100)) {
+                    seen = f.seq;
+                    last = Some(f.image);
+                }
+            }
+            let stats = feed.stats();
+            let state = feed.state();
+            drop(feed);
+            match (&state, &last) {
+                (_, Some(img)) => {
+                    println!(
+                        "{}: {} frames, {:.2} fps, {} reconnects ({}×{})",
+                        stats.description,
+                        stats.frames,
+                        stats.fps,
+                        stats.reconnects,
+                        img.width(),
+                        img.height()
+                    );
+                    if let Some(path) = png {
+                        image::save_buffer(
+                            &path,
+                            img.rgba8(),
+                            img.width(),
+                            img.height(),
+                            image::ExtendedColorType::Rgba8,
+                        )
+                        .map_err(|e| format!("{}: {e}", path.display()))?;
+                        println!("saved {}", path.display());
+                    }
+                    Ok(())
+                }
+                (LiveState::Retrying { error }, None) => Err(format!("no frames: {error}")),
+                (_, None) => Err("no frames received".into()),
+            }
+        }
     }
 }
 
@@ -190,11 +297,11 @@ fn run(cli: Cli) -> Result<(), String> {
 fn prepare(path: &Path) -> Result<(Project, Compositor, MediaRuntime), String> {
     let project = store::load(path).map_err(|e| e.to_string())?.project;
     let gpu = GpuContext::headless().map_err(|e| e.to_string())?;
-    let opener: Arc<dyn VideoOpener> = Arc::new(om_media_ffmpeg::FfmpegOpener);
+    let adapters = om_platform::adapters();
     Ok((
         project,
         Compositor::new(gpu),
-        MediaRuntime::new(Some(opener)),
+        MediaRuntime::new(adapters.video).with_live(adapters.live),
     ))
 }
 

@@ -1,0 +1,15 @@
+[package]
+name = "om-platform"
+description = "OpenMapper platform assembly: the media, live-input and publishing adapters available on this OS"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+om-media-core.workspace = true
+om-media-ffmpeg.workspace = true
+
+[lints]
+workspace = true

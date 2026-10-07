@@ -18,6 +18,7 @@ members = [
     "crates/om-oscquery",
     "crates/om-midi",
     "crates/om-engine",
+    "crates/om-platform",
     "crates/om-ui-egui",
     "apps/openmapper",
     "apps/openmapper-cli",
@@ -44,6 +45,7 @@ om-gpu = { path = "crates/om-gpu" }
 om-render = { path = "crates/om-render" }
 om-output = { path = "crates/om-output" }
 om-media-ffmpeg = { path = "crates/om-media-ffmpeg" }
+om-platform = { path = "crates/om-platform" }
 om-audio = { path = "crates/om-audio" }
 om-isf = { path = "crates/om-isf" }
 om-show = { path = "crates/om-show" }
@@ -79,6 +81,8 @@ half = "2.7.1"
 display-info = "0.5.9"
 # Dynamically linked via pkg-config; see docs/media/ffmpeg.md.
 ffmpeg-next = "9.0.0"
+# macOS capture-device enumeration (names match FFmpeg's avfoundation input).
+objc2-av-foundation = "0.3.2"
 cpal = "0.18.2"
 rosc = "0.11.4"
 tiny_http = "0.12.0"

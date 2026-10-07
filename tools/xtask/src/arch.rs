@@ -46,6 +46,7 @@ pub const LAYERS: &[(&str, u8)] = &[
     ("om-plugin-host", 3),
     ("om-engine", 4),
     ("om-testkit", 4),
+    ("om-platform", 4),
     ("om-ui-egui", 5),
     ("openmapper", 6),
     ("openmapper-cli", 6),

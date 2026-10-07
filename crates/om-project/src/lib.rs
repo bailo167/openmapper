@@ -17,9 +17,11 @@ pub mod store;
 pub use migrate::{CURRENT_VERSION, FORMAT};
 pub use param::{ParamId, ParamKind, ParamValue};
 pub use schema::{
-    BlendMode, Canvas, DisplayTarget, Effect, EffectKind, Extensions, MAX_BLUR_RADIUS, MAX_EFFECTS,
-    MAX_MASK_POINTS, MAX_MESH_DIVISIONS, Mask, MaskPoint, Media, MediaSource, Output, PatternKind,
-    Playback, Project, ShaderValue, Shape, Surface, Timebase, line_quad,
+    BlendMode, Canvas, DisplayTarget, Effect, EffectKind, Extensions, LiveInput, MAX_BLUR_RADIUS,
+    MAX_EFFECTS, MAX_MASK_POINTS, MAX_MESH_DIVISIONS, MAX_PUBLISH, Mask, MaskPoint, Media,
+    MediaSource, Output, PUBLISH_SCHEMES, PatternKind, Playback, Project, Publish, STREAM_FPS,
+    STREAM_SCHEMES, ShaderValue, Shape, StreamCodec, Surface, Timebase, line_quad,
+    validate_stream_url,
 };
 pub use show::{
     AudioBand, Controls, Cue, CueValue, Ease, Keyframe, LfoShape, Marker, Master, MidiBinding,
@@ -161,6 +163,11 @@ impl Project {
             {
                 return invalid(format!("media {} has an empty path", m.id));
             }
+            if let MediaSource::Live { input } = &m.source
+                && let Err(e) = input.validate()
+            {
+                return invalid(format!("media {}: {e}", m.id));
+            }
         }
         for s in &self.surfaces {
             if let Some(mid) = s.media
@@ -173,6 +180,17 @@ impl Project {
         for o in &self.outputs {
             if !seen.insert(o.id) {
                 return invalid(format!("duplicate output id {}", o.id));
+            }
+            if o.publish.len() > MAX_PUBLISH {
+                return invalid(format!(
+                    "output {} has more than {MAX_PUBLISH} publish targets",
+                    o.id
+                ));
+            }
+            for p in &o.publish {
+                if let Err(e) = p.validate() {
+                    return invalid(format!("output {}: {e}", o.id));
+                }
             }
         }
         Ok(())

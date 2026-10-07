@@ -14,8 +14,12 @@ fixtures = []
 [dependencies]
 om-time.workspace = true
 om-media-core.workspace = true
+om-project.workspace = true
 ffmpeg-next.workspace = true
 thiserror.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-av-foundation.workspace = true
 
 [dev-dependencies]
 om-media-ffmpeg = { path = ".", features = ["fixtures"] }

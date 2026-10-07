@@ -8,12 +8,17 @@
 //! diagnostics and the release audit can check it (docs/media/ffmpeg.md).
 
 mod audio;
+mod interrupt;
+mod live;
+mod sink;
 mod video;
 
 #[cfg(feature = "fixtures")]
 pub mod fixtures;
 
 pub use audio::FfmpegAudio;
+pub use live::{Camera, FfmpegLive, FfmpegLiveOpener, OPEN_TIMEOUT, READ_TIMEOUT, list_cameras};
+pub use sink::{FfmpegSinkOpener, StreamSink, WRITE_TIMEOUT};
 pub use video::FfmpegVideo;
 
 /// [`om_media_core::VideoOpener`] backed by FFmpeg.

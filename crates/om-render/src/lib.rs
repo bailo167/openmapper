@@ -18,6 +18,7 @@ mod compositor;
 pub mod effects;
 pub mod isf;
 mod plan;
+mod readback;
 pub mod reference;
 
 pub use colour::{linear_to_srgb, linear_to_srgb8, srgb_to_linear};
@@ -25,3 +26,4 @@ pub use compositor::{Compositor, FrameInputs, FrameReport, RenderError, Resource
 pub use plan::{
     Clip, DrawItem, MAX_MASK_VERTICES, Mapping, MaskShape, RenderPlan, SkipReason, plan,
 };
+pub use readback::FrameReader;

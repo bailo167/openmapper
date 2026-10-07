@@ -821,3 +821,52 @@ fn master_opacity_and_blackout_scale_the_output() {
             .all(|p| p[..3] == [0, 0, 0])
     );
 }
+
+/// Publishing readback: a frame presented into an 8-bit texture comes back
+/// through the non-blocking ring and matches the blocking readback.
+#[test]
+fn frame_reader_returns_presented_frames() {
+    let Some(g) = gpu() else { return };
+    let (w, h) = (70, 45);
+    let pr = project(w, h, vec![surface(1, Shape::default(), GRID)]);
+    let mut c = Compositor::new(g.clone());
+    let fx = Fixture::new((64, 48));
+    let expected = fx.gpu_render(&mut c, &pr);
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let texture = g.device().create_texture(&wgpu::TextureDescriptor {
+        label: Some("test output"),
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut reader = om_render::FrameReader::new(g.device(), g.queue());
+    for round in 0..5 {
+        let mut enc = g
+            .device()
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        c.present(&mut enc, &view, format).unwrap();
+        g.queue().submit([enc.finish()]);
+        reader.capture(&texture);
+        let frame = reader.wait().expect("a frame after waiting");
+        assert_eq!((frame.width(), frame.height()), (w, h));
+        let d = diff(frame.rgba8(), &expected, |_| true);
+        assert!(d.max <= 1, "round {round}: {d:?}");
+    }
+    // Several captures before collecting: only the newest is returned and
+    // nothing is lost track of.
+    for _ in 0..3 {
+        reader.capture(&texture);
+    }
+    assert!(reader.wait().is_some());
+    assert!(reader.poll().is_none());
+    assert_eq!(reader.skipped, 0);
+}

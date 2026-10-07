@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use om_project::{
-    BlendMode, Canvas, DisplayTarget, Effect, Mask, Media, Output, Playback, Project, Shape,
-    Surface,
+    BlendMode, Canvas, DisplayTarget, Effect, MAX_PUBLISH, Mask, Media, Output, Playback, Project,
+    Publish, Shape, Surface,
 };
 use om_types::{MediaId, OutputId, SurfaceId, UnitInterval};
 use serde::{Deserialize, Serialize};
@@ -105,6 +105,11 @@ pub enum Command {
     SetOutputDisplay {
         id: OutputId,
         display: Option<DisplayTarget>,
+    },
+    /// Replaces where the output's frames are published.
+    SetOutputPublish {
+        id: OutputId,
+        publish: Vec<Publish>,
     },
     SetMaster {
         master: om_project::Master,
@@ -521,6 +526,25 @@ impl Command {
                     events: vec![Event::OutputChanged { id: *id }],
                 })
             }
+            Self::SetOutputPublish { id, publish } => {
+                let at = output_index(project, *id)?;
+                if publish.len() > MAX_PUBLISH {
+                    return Err(CommandError::Invalid(format!(
+                        "more than {MAX_PUBLISH} publish targets"
+                    )));
+                }
+                for p in publish {
+                    p.validate().map_err(CommandError::Invalid)?;
+                }
+                let old = std::mem::replace(&mut project.outputs[at].publish, publish.clone());
+                Ok(Applied {
+                    inverse: Self::SetOutputPublish {
+                        id: *id,
+                        publish: old,
+                    },
+                    events: vec![Event::OutputChanged { id: *id }],
+                })
+            }
             Self::SetMaster { master } => {
                 let old = std::mem::replace(&mut project.master, *master);
                 Ok(Applied {
@@ -685,6 +709,7 @@ impl Command {
             Self::RemoveOutput { .. } => "Remove Output",
             Self::UpdateOutput { .. } => "Edit Output",
             Self::SetOutputDisplay { .. } => "Assign Display",
+            Self::SetOutputPublish { .. } => "Publish Settings",
             Self::SetExtension { .. } => "Edit Extension",
             Self::SetMaster { .. } => "Master",
             Self::SetControls { .. } => "Control Settings",

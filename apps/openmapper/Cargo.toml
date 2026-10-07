@@ -9,8 +9,7 @@ publish.workspace = true
 
 [dependencies]
 om-ui-egui.workspace = true
-om-media-ffmpeg.workspace = true
-om-media-core.workspace = true
+om-platform.workspace = true
 eframe.workspace = true
 
 [lints]

@@ -5,6 +5,7 @@
 
 mod canvas;
 mod gpu;
+mod live_ui;
 mod show_ui;
 
 use std::path::PathBuf;
@@ -12,10 +13,8 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, Pos2, Stroke};
 use om_command::Command;
-use std::sync::Arc;
 
-use om_engine::{OpenReport, Session, Transport, path_for_storage};
-use om_media_core::{AudioOpener, VideoOpener};
+use om_engine::{Adapters, OpenReport, Session, Transport, path_for_storage};
 use om_output::Display;
 use om_project::{
     BlendMode, Canvas, MAX_MASK_POINTS, Mask, MaskPoint, Media, MediaSource, Output, PatternKind,
@@ -50,6 +49,7 @@ pub struct OpenMapperApp {
     /// The project as rendered this frame (document + show overrides).
     effective: Option<om_project::Project>,
     show_tab: show_ui::ShowTab,
+    live_ui: live_ui::LiveUi,
     displays: Vec<Display>,
     display_error: Option<String>,
     last_poll: Option<Instant>,
@@ -73,15 +73,14 @@ impl OpenMapperApp {
     pub fn new(
         cc: &eframe::CreationContext<'_>,
         path: Option<PathBuf>,
-        opener: Option<Arc<dyn VideoOpener>>,
-        audio_opener: Option<Arc<dyn AudioOpener>>,
+        adapters: &Adapters,
     ) -> Self {
         let mut app = Self {
             session: Session::new("Untitled"),
             viewer: cc
                 .wgpu_render_state
                 .as_ref()
-                .map(|rs| Viewer::new(&cc.egui_ctx, rs, opener, audio_opener)),
+                .map(|rs| Viewer::new(&cc.egui_ctx, rs, adapters)),
             selected: None,
             path_input: String::from("untitled.omproj"),
             media_path_input: String::new(),
@@ -99,6 +98,7 @@ impl OpenMapperApp {
             live: om_engine::live::Live::new(),
             effective: None,
             show_tab: show_ui::ShowTab::Cues,
+            live_ui: live_ui::LiveUi::new(adapters.live.clone().map(om_engine::Discovery::new)),
         };
         if app.viewer.is_none() {
             app.error("No GPU renderer available; the canvas cannot be shown.");
@@ -436,6 +436,7 @@ impl OpenMapperApp {
                 self.media_path_input.clear();
             }
         });
+        self.live_input_controls(ui);
         let show = self.transport.time(Instant::now());
         let media = self.session.project().media.clone();
         for m in media {
@@ -584,6 +585,7 @@ impl OpenMapperApp {
                         name: format!("Output {n}"),
                         enabled: false,
                         display,
+                        publish: Vec::new(),
                         extensions: Default::default(),
                     },
                     index: None,
@@ -665,6 +667,7 @@ impl OpenMapperApp {
                     }
                     None => {}
                 }
+                self.publish_controls(ui, &o);
             });
         }
     }

@@ -7,11 +7,10 @@ use eframe::egui;
 use eframe::egui_wgpu::{self, wgpu};
 use std::sync::Arc;
 
-use om_engine::{AudioSetup, MediaRuntime, Transport, audio_clock};
+use om_engine::{Adapters, AudioSetup, MediaRuntime, PublishRuntime, Transport, audio_clock};
 use om_gpu::GpuContext;
-use om_media_core::{AudioOpener, VideoOpener};
 use om_project::Project;
-use om_render::{Compositor, FrameReport};
+use om_render::{Compositor, FrameReader, FrameReport};
 use om_time::RationalTime;
 
 /// Format egui expects for user textures (sRGB-encoded values, see egui-wgpu).
@@ -19,7 +18,7 @@ const PREVIEW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 struct Preview {
     size: (u32, u32),
-    _texture: wgpu::Texture,
+    texture: wgpu::Texture,
     view: wgpu::TextureView,
     id: egui::TextureId,
 }
@@ -30,6 +29,9 @@ pub struct Viewer {
     compositor: Compositor,
     preview: Option<Preview>,
     pub media: MediaRuntime,
+    /// Syphon/Spout/NDI/stream publishing of the output frame.
+    pub publish: PublishRuntime,
+    reader: FrameReader,
     mixer: Option<om_audio::Mixer>,
     _audio_out: Option<om_audio::Output>,
     /// Audio device in use, or why audio is unavailable.
@@ -52,9 +54,9 @@ impl Viewer {
     pub fn new(
         ctx: &egui::Context,
         render_state: &egui_wgpu::RenderState,
-        opener: Option<Arc<dyn VideoOpener>>,
-        audio_opener: Option<Arc<dyn AudioOpener>>,
+        adapters: &Adapters,
     ) -> Self {
+        let audio_opener = adapters.audio.clone();
         // Audio is optional: a machine without an output device still maps.
         let (mixer, audio_out, audio_status) =
             match audio_opener.as_ref().map(|_| om_audio::default_rate()) {
@@ -89,7 +91,10 @@ impl Viewer {
             thumbs: std::collections::HashMap::new(),
             compositor: Compositor::new(gpu),
             preview: None,
-            media: MediaRuntime::with_audio(opener, audio),
+            media: MediaRuntime::with_audio(adapters.video.clone(), audio)
+                .with_live(adapters.live.clone()),
+            publish: PublishRuntime::new(adapters.sinks.clone()),
+            reader: FrameReader::new(&render_state.device, &render_state.queue),
             mixer,
             _audio_out: audio_out,
             audio_status,
@@ -125,7 +130,17 @@ impl Viewer {
             show_seconds: show.as_seconds_f64(),
             media_seconds: changes.shader_times.iter().copied().collect(),
         };
-        match self.render(project, &inputs) {
+        let rendered = self.render(project, &inputs);
+        self.publish.sync(project);
+        if self.publish.is_active() {
+            if let (Ok(_), Some(p)) = (&rendered, &self.preview) {
+                self.reader.capture(&p.texture);
+            }
+            if let Some(frame) = self.reader.poll() {
+                self.publish.submit_all(&Arc::new(frame));
+            }
+        }
+        match rendered {
             Ok(id) => {
                 self.last_error = None;
                 Some(id)
@@ -251,7 +266,9 @@ impl Viewer {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: PREVIEW_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -270,7 +287,7 @@ impl Viewer {
         };
         self.preview = Some(Preview {
             size,
-            _texture: texture,
+            texture,
             view,
             id,
         });

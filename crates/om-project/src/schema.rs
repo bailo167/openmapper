@@ -145,6 +145,173 @@ pub enum MediaSource {
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         inputs: BTreeMap<String, ShaderValue>,
     },
+    /// A live video feed: a camera, a network stream or another application.
+    Live { input: LiveInput },
+}
+
+/// Where a live feed comes from. Devices and senders are identified by
+/// name, so they are found again after unplugging, restarting or moving
+/// ports (see DECISIONS.md D-020).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum LiveInput {
+    /// A capture device (webcam, or a capture card exposed as a camera).
+    Camera { device: String },
+    /// A network stream: `srt://`, `udp://`, `rtp://`, `rtsp://`,
+    /// `rtmp://`, `tcp://`, `http://` or `https://`.
+    Stream { url: String },
+    /// An NDI source, by its full name (`MACHINE (Source)`).
+    Ndi { source: String },
+    /// A Syphon server (macOS). An empty `app` matches any application.
+    Syphon {
+        server: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        app: String,
+    },
+    /// A Spout sender (Windows), by name.
+    Spout { sender: String },
+}
+
+/// URL schemes accepted for [`LiveInput::Stream`] and [`Publish::Stream`].
+pub const STREAM_SCHEMES: [&str; 8] = ["srt", "udp", "rtp", "rtsp", "rtmp", "tcp", "http", "https"];
+
+/// URL schemes accepted for [`Publish::Stream`] (push transports).
+pub const PUBLISH_SCHEMES: [&str; 4] = ["srt", "udp", "rtp", "tcp"];
+
+/// Most publish targets per output.
+pub const MAX_PUBLISH: usize = 8;
+
+/// Checks that `url` is a network URL with an accepted scheme.
+pub fn validate_stream_url(url: &str) -> Result<(), String> {
+    let scheme = url
+        .split_once("://")
+        .map(|(s, _)| s.to_ascii_lowercase())
+        .ok_or_else(|| format!("{url:?} is not a URL (expected e.g. srt://host:port)"))?;
+    if !STREAM_SCHEMES.contains(&scheme.as_str()) {
+        return Err(format!(
+            "unsupported stream scheme {scheme:?} (use one of {})",
+            STREAM_SCHEMES.join(", ")
+        ));
+    }
+    if url.len() > 2048 || url.chars().any(char::is_control) {
+        return Err("stream URL is too long or contains control characters".into());
+    }
+    Ok(())
+}
+
+impl LiveInput {
+    /// Short human-readable description (`Camera "FaceTime HD"`).
+    #[must_use]
+    pub fn label(&self) -> String {
+        match self {
+            Self::Camera { device } => format!("Camera \"{device}\""),
+            Self::Stream { url } => format!("Stream {url}"),
+            Self::Ndi { source } => format!("NDI \"{source}\""),
+            Self::Syphon { server, app } if app.is_empty() => format!("Syphon \"{server}\""),
+            Self::Syphon { server, app } => format!("Syphon \"{app} – {server}\""),
+            Self::Spout { sender } => format!("Spout \"{sender}\""),
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        let name = match self {
+            Self::Stream { url } => return validate_stream_url(url),
+            Self::Camera { device } => device,
+            Self::Ndi { source } => source,
+            Self::Syphon { server, app } if server.is_empty() => app,
+            Self::Syphon { server, .. } => server,
+            Self::Spout { sender } => sender,
+        };
+        if name.trim().is_empty() {
+            return Err(format!("{} has an empty name", self.label()));
+        }
+        Ok(())
+    }
+}
+
+/// Where an output's frames are also published, besides its window.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Publish {
+    /// A Syphon server (macOS) named `name`.
+    Syphon { name: String },
+    /// A Spout sender (Windows) named `name`.
+    Spout { name: String },
+    /// An NDI source named `name`.
+    Ndi { name: String },
+    /// A network stream sent to `url` (see docs/live-io.md).
+    Stream {
+        url: String,
+        #[serde(default)]
+        codec: StreamCodec,
+        /// Frames per second sent (the newest output frame at each tick).
+        #[serde(default = "default_stream_fps")]
+        fps: u32,
+    },
+}
+
+/// Encoding of a published network stream.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamCodec {
+    /// MPEG-2 video in MPEG-TS: plays almost everywhere (VLC, OBS, FFmpeg).
+    #[default]
+    Compatible,
+    /// FFV1 (lossless, with alpha) in Matroska: bit-exact, high bandwidth.
+    Lossless,
+}
+
+fn default_stream_fps() -> u32 {
+    30
+}
+
+/// Accepted [`Publish::Stream`] rates (MPEG-2 allows only standard rates).
+pub const STREAM_FPS: [u32; 5] = [24, 25, 30, 50, 60];
+
+impl Publish {
+    #[must_use]
+    pub fn label(&self) -> String {
+        match self {
+            Self::Syphon { name } => format!("Syphon \"{name}\""),
+            Self::Spout { name } => format!("Spout \"{name}\""),
+            Self::Ndi { name } => format!("NDI \"{name}\""),
+            Self::Stream { url, .. } => format!("Stream {url}"),
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Stream { url, fps, codec } => {
+                if !STREAM_FPS.contains(fps) {
+                    return Err(format!("stream rate {fps} is not one of {STREAM_FPS:?}"));
+                }
+                validate_stream_url(url)?;
+                let scheme = url
+                    .split_once("://")
+                    .map(|(s, _)| s.to_ascii_lowercase())
+                    .unwrap_or_default();
+                if !PUBLISH_SCHEMES.contains(&scheme.as_str()) {
+                    return Err(format!(
+                        "cannot publish to {scheme}:// (use one of {})",
+                        PUBLISH_SCHEMES.join(", ")
+                    ));
+                }
+                if *codec == StreamCodec::Lossless && matches!(scheme.as_str(), "udp" | "rtp") {
+                    return Err("lossless streams need a reliable transport (tcp or srt)".into());
+                }
+                Ok(())
+            }
+            Self::Syphon { name } | Self::Spout { name } | Self::Ndi { name } => {
+                if name.trim().is_empty() {
+                    Err(format!("{} has an empty name", self.label()))
+                } else if name.len() > 255 {
+                    Err("publish name is longer than 255 bytes".into())
+                } else {
+                    Ok(())
+                }
+            }
+        }
+    }
 }
 
 impl MediaSource {
@@ -156,7 +323,7 @@ impl MediaSource {
             | Self::Video { path }
             | Self::Sequence { path, .. }
             | Self::Shader { path, .. } => Some(path),
-            Self::Pattern { .. } => None,
+            Self::Pattern { .. } | Self::Live { .. } => None,
         }
     }
 
@@ -764,6 +931,9 @@ pub struct Output {
     /// projector re-plugged into another port is found again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display: Option<DisplayTarget>,
+    /// Also publish this output's frames (independently of the window).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub publish: Vec<Publish>,
     #[serde(default)]
     pub extensions: Extensions,
 }

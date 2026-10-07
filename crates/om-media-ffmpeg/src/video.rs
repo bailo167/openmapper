@@ -74,6 +74,17 @@ impl FfmpegVideo {
             return Err(MediaError::NotFound { path: shown });
         }
         let input = ff::format::input(path).map_err(|e| open_err(&shown, e))?;
+        Self::from_input(input, shown, false)
+    }
+
+    /// Decodes the best video stream of an opened input. `live` selects
+    /// low-latency decoding (slice threading; frame threading would hold
+    /// back several frames).
+    pub(crate) fn from_input(
+        input: ff::format::context::Input,
+        shown: String,
+        live: bool,
+    ) -> Result<Self, MediaError> {
         let stream = input
             .streams()
             .best(ff::media::Type::Video)
@@ -92,9 +103,16 @@ impl FfmpegVideo {
         let mut ctx = ff::codec::context::Context::from_parameters(stream.parameters())
             .map_err(|e| open_err(&shown, e))?;
         ctx.set_threading(ff::threading::Config {
-            kind: ff::threading::Type::Frame,
+            kind: if live {
+                ff::threading::Type::Slice
+            } else {
+                ff::threading::Type::Frame
+            },
             count: 0,
         });
+        if live {
+            ctx.set_flags(ff::codec::Flags::LOW_DELAY);
+        }
         let decoder = ctx.decoder().video().map_err(|e| open_err(&shown, e))?;
         let duration = if stream.duration() > 0 {
             RationalTime::new(

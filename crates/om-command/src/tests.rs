@@ -266,6 +266,7 @@ fn arb_new_command() -> impl Strategy<Value = Command> {
                 name: "o".into(),
                 enabled: false,
                 display: None,
+                publish: Vec::new(),
                 extensions: Default::default(),
             },
             index: None,
@@ -278,12 +279,22 @@ fn arb_new_command() -> impl Strategy<Value = Command> {
                 enabled,
             }
         }),
-        (oid, proptest::option::of(0u32..3)).prop_map(|(id, i)| Command::SetOutputDisplay {
+        (oid.clone(), proptest::option::of(0u32..3)).prop_map(|(id, i)| {
+            Command::SetOutputDisplay {
+                id,
+                display: i.map(|index| DisplayTarget {
+                    name: format!("D{index}"),
+                    index,
+                }),
+            }
+        }),
+        (oid, 0usize..3).prop_map(|(id, n)| Command::SetOutputPublish {
             id,
-            display: i.map(|index| DisplayTarget {
-                name: format!("D{index}"),
-                index
-            }),
+            publish: (0..n)
+                .map(|k| om_project::Publish::Ndi {
+                    name: format!("N{k}"),
+                })
+                .collect(),
         }),
     ]
 }

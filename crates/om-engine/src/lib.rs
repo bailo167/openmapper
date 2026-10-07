@@ -6,10 +6,17 @@
 //! through a session so persistence and recovery behave identically
 //! everywhere.
 
+mod discovery;
 pub mod live;
 mod media;
+mod publish;
 
 use std::path::{Path, PathBuf};
+
+pub use discovery::Discovery;
+pub use publish::{PublishRuntime, PublishStatus};
+
+pub use om_media_core::Adapters;
 
 pub use media::{
     AudioSetup, MediaChanges, MediaRuntime, MediaStatus, Transport, audio_clock, media_time,
