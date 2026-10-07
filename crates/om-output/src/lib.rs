@@ -85,15 +85,13 @@ pub fn list_displays() -> Result<Vec<Display>, DisplayError> {
         .into_iter()
         .enumerate()
         .map(|(i, d)| {
-            // Linux reports only the connector; the monitor's own name comes
-            // from its EDID, so a projector is found again on another port.
-            let (name, connector) = if d.friendly_name.trim().is_empty() {
-                match edid_name_for_connector(&d.name) {
-                    Some(model) => (model, Some(d.name)),
-                    None => (d.name, None),
-                }
-            } else {
-                (d.friendly_name, None)
+            // Linux reports only the connector (as both names); the
+            // monitor's own name comes from its EDID, so a projector is
+            // found again on another port.
+            let (name, connector) = match edid_name_for_connector(&d.name) {
+                Some(model) => (model, Some(d.name)),
+                None if d.friendly_name.trim().is_empty() => (d.name, None),
+                None => (d.friendly_name, None),
             };
             Display {
                 index: u32::try_from(i).unwrap_or(u32::MAX),

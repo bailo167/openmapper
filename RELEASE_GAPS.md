@@ -33,6 +33,10 @@ With a physical projector on macOS, Windows and Linux: display
 enumeration, fullscreen on the chosen display, hot-plug (unplug/replug
 while running), sleep/wake, and a 30-minute run without drift or resource
 growth. Procedure: docs/release/checklist.md §Hardware.
+**Linux passed** on 2026-10-08 (XGIMI HORIZON 20 via octv01: enumeration
+by EDID name, fullscreen, frame matches the offscreen reference, 30-minute
+run with flat memory and GPU use). Still open: hot-plug, sleep/wake, and
+macOS/Windows projector runs.
 
 ### G-02 Camera input (P0 `live.camera`)
 A real camera on each OS, including the OS permission prompt (cannot be

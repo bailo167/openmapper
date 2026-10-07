@@ -29,6 +29,9 @@ use om_types::{MediaId, OutputId, SurfaceId, UnitInterval};
 use crate::canvas::{Drag, begin_drag, dragged_shape, fit_rect, screen_outline, to_screen};
 use crate::gpu::Viewer;
 
+/// How long after opening an output window it is raised until focused.
+const OUTPUT_RAISE_WINDOW: Duration = Duration::from_secs(3);
+
 /// How often to re-enumerate displays and retry missing media.
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -56,8 +59,13 @@ pub struct OpenMapperApp {
     effective: Option<om_project::Project>,
     show_tab: show_ui::ShowTab,
     live_ui: live_ui::LiveUi,
-    /// Output windows currently open (raised once when they first open).
-    open_outputs: std::collections::HashSet<OutputId>,
+    /// Output windows currently open, with when each opened (they are
+    /// raised until focused, for a short while after opening).
+    open_outputs: std::collections::HashMap<OutputId, Instant>,
+    /// Unattended show: minimise the control window once an output is open,
+    /// so it cannot cover the show on a single display (Wayland compositors
+    /// refuse to raise windows without user input).
+    minimise_for_show: bool,
     dmx_ui: dmx_ui::DmxUi,
     displays: Vec<Display>,
     display_error: Option<String>,
@@ -116,7 +124,8 @@ impl OpenMapperApp {
             show_tab: show_ui::ShowTab::Cues,
             dmx_ui: dmx_ui::DmxUi::default(),
             live_ui: live_ui::LiveUi::new(adapters.live.clone().map(om_engine::Discovery::new)),
-            open_outputs: std::collections::HashSet::new(),
+            open_outputs: std::collections::HashMap::new(),
+            minimise_for_show: false,
             trust: om_engine::trust::TrustStore::load_default(),
             trust_checked: None,
         };
@@ -133,6 +142,13 @@ impl OpenMapperApp {
     /// Starts the show transport.
     pub fn play(&mut self) {
         self.transport.play(Instant::now());
+    }
+
+    /// Unattended show: plays, and minimises the control window once an
+    /// output window is open so the show is never hidden behind it.
+    pub fn run_show(&mut self) {
+        self.play();
+        self.minimise_for_show = true;
     }
 
     fn info(&mut self, msg: impl Into<String>) {
@@ -1409,7 +1425,7 @@ impl OpenMapperApp {
             return;
         };
         let outputs = self.session.project().outputs.clone();
-        let mut shown = std::collections::HashSet::new();
+        let mut shown = std::collections::HashMap::new();
         for o in outputs.iter().filter(|o| o.enabled) {
             let Some(display) = o
                 .display
@@ -1437,7 +1453,9 @@ impl OpenMapperApp {
                 .with_decorations(false)
                 .with_window_level(egui::WindowLevel::AlwaysOnTop);
             let id = egui::ViewportId::from_hash_of(("output", o.id));
+            let mut focused = false;
             let close = ctx.show_viewport_immediate(id, builder, |ui, _class| {
+                focused = ui.input(|i| i.viewport().focused == Some(true));
                 let rect = ui.max_rect();
                 ui.painter().image(
                     texture,
@@ -1454,11 +1472,27 @@ impl OpenMapperApp {
                     enabled: Some(false),
                 });
             } else {
-                shown.insert(o.id);
-                if !self.open_outputs.contains(&o.id) {
+                // The window may not be mapped on its first frame, so keep
+                // asking until it has focus (bounded, so an operator who
+                // clicks back to the control window keeps it).
+                let opened = self
+                    .open_outputs
+                    .get(&o.id)
+                    .copied()
+                    .unwrap_or_else(Instant::now);
+                if !focused && opened.elapsed() < OUTPUT_RAISE_WINDOW {
                     ctx.send_viewport_cmd_to(id, egui::ViewportCommand::Focus);
+                    ctx.request_repaint();
                 }
+                shown.insert(o.id, opened);
             }
+        }
+        if self.minimise_for_show && !shown.is_empty() {
+            ctx.send_viewport_cmd_to(
+                egui::ViewportId::ROOT,
+                egui::ViewportCommand::Minimized(true),
+            );
+            self.minimise_for_show = false;
         }
         self.open_outputs = shown;
     }
