@@ -186,9 +186,19 @@ fn arb_new_command() -> impl Strategy<Value = Command> {
                 source: MediaSource::Pattern {
                     pattern: PatternKind::UvGrid
                 },
+                playback: Default::default(),
                 extensions: Default::default(),
             },
             index,
+        }),
+        (mid.clone(), any::<bool>(), -32i32..32).prop_map(|(id, looping, n)| {
+            Command::SetMediaPlayback {
+                id,
+                playback: om_project::Playback {
+                    looping,
+                    speed: om_time::Speed::new(n, 4).unwrap(),
+                },
+            }
         }),
         mid.prop_map(|id| Command::RemoveMedia { id }),
         (0u32..5000, 0u32..5000).prop_map(|(width, height)| Command::SetCanvas {
@@ -313,6 +323,7 @@ fn media_in_use_cannot_be_removed() {
             source: MediaSource::Pattern {
                 pattern: PatternKind::UvGrid,
             },
+            playback: Default::default(),
             extensions: Default::default(),
         },
         index: None,

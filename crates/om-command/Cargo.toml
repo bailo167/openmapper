@@ -15,6 +15,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+om-time.workspace = true
 om-geom.workspace = true
 proptest.workspace = true
 

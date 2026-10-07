@@ -74,8 +74,9 @@ impl std::fmt::Debug for VideoPlayer {
     }
 }
 
-/// True if `frame` is displayed at `t`. A frame whose end is unknown (its
-/// successor not decoded yet) only covers `t` if it is the final frame.
+/// True if `frame` is displayed at `t`. `last` means it is the final frame
+/// of an ended stream, which holds for all later times; otherwise a frame
+/// whose end is unknown (successor not decoded yet) does not cover `t`.
 fn covers(frame: &VideoFrame, next: Option<&VideoFrame>, t: RationalTime, eos: bool) -> bool {
     use std::cmp::Ordering::Greater;
     let starts = frame.pts.checked_cmp(t).is_ok_and(|o| o != Greater);
@@ -84,7 +85,7 @@ fn covers(frame: &VideoFrame, next: Option<&VideoFrame>, t: RationalTime, eos: b
         .or_else(|| frame.duration.and_then(|d| frame.pts.checked_add(d).ok()));
     starts
         && match end {
-            Some(e) => e.checked_cmp(t).is_ok_and(|o| o == Greater),
+            Some(e) => eos || e.checked_cmp(t).is_ok_and(|o| o == Greater),
             None => eos,
         }
 }
@@ -404,5 +405,38 @@ mod tests {
             8,
         );
         drop(p); // must join promptly, not hang
+    }
+}
+
+#[cfg(test)]
+mod end_of_stream {
+    use super::*;
+    #[test]
+    fn exact_end_time_holds_last_frame() {
+        use crate::ImageSequence;
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..5u8 {
+            image::save_buffer(
+                dir.path().join(format!("img_{i:03}.png")),
+                &[i * 10, 0, 0, 255],
+                1,
+                1,
+                image::ExtendedColorType::Rgba8,
+            )
+            .unwrap();
+        }
+        let seq = ImageSequence::open(dir.path(), om_time::Rate::FPS_25).unwrap();
+        let mut p = VideoPlayer::spawn(seq, RationalTime::ZERO, 6);
+        let t3 = RationalTime::from_frame(3, om_time::Rate::FPS_25).unwrap();
+        let f = p
+            .frame_at_blocking(t3, std::time::Duration::from_secs(2))
+            .map(|f| f.pts);
+        assert_eq!(f, Some(t3));
+        // Exactly the end of the last frame (its duration is known).
+        let end = RationalTime::new(1, 5).unwrap();
+        let f = p
+            .frame_at_blocking(end, std::time::Duration::from_secs(2))
+            .map(|f| f.pts);
+        assert_eq!(f, Some(RationalTime::new(4, 25).unwrap()));
     }
 }

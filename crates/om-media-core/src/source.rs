@@ -92,6 +92,24 @@ pub trait MediaSource: Send {
     fn next_frame(&mut self) -> Result<Option<VideoFrame>, MediaError>;
 }
 
+impl MediaSource for Box<dyn MediaSource> {
+    fn descriptor(&self) -> &MediaDescriptor {
+        (**self).descriptor()
+    }
+    fn seek(&mut self, t: RationalTime) -> Result<(), MediaError> {
+        (**self).seek(t)
+    }
+    fn next_frame(&mut self) -> Result<Option<VideoFrame>, MediaError> {
+        (**self).next_frame()
+    }
+}
+
+/// Opens video files. Implemented by media adapters (e.g. FFmpeg) and
+/// injected by applications, so the engine does not depend on any adapter.
+pub trait VideoOpener: Send + Sync {
+    fn open_video(&self, path: &std::path::Path) -> Result<Box<dyn MediaSource>, MediaError>;
+}
+
 /// How far ahead (seconds) sequential decoding is preferred over seeking.
 const MAX_DECODE_AHEAD_SECONDS: i64 = 2;
 

@@ -10,7 +10,10 @@ mod media;
 
 use std::path::{Path, PathBuf};
 
-pub use media::{MediaChanges, MediaLibrary, path_for_storage, resolve_media_path};
+pub use media::{
+    MediaChanges, MediaRuntime, MediaStatus, Transport, media_time, path_for_storage,
+    resolve_media_path, speed_percent,
+};
 
 use om_command::{Command, CommandError, CommandResult, Document, HistoryError};
 use om_project::Project;

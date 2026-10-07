@@ -30,7 +30,15 @@ fn main() -> ExitCode {
     let result = eframe::run_native(
         "OpenMapper",
         options,
-        Box::new(|cc| Ok(Box::new(om_ui_egui::OpenMapperApp::new(cc, path)))),
+        Box::new(|cc| {
+            let opener: Arc<dyn om_media_core::VideoOpener> =
+                Arc::new(om_media_ffmpeg::FfmpegOpener);
+            Ok(Box::new(om_ui_egui::OpenMapperApp::new(
+                cc,
+                path,
+                Some(opener),
+            )))
+        }),
     );
     match result {
         Ok(()) => ExitCode::SUCCESS,

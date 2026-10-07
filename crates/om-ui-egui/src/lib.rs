@@ -11,9 +11,13 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, Pos2, Stroke};
 use om_command::Command;
-use om_engine::{OpenReport, Session, path_for_storage};
+use std::sync::Arc;
+
+use om_engine::{OpenReport, Session, Transport, path_for_storage};
+use om_media_core::VideoOpener;
 use om_output::Display;
-use om_project::{Canvas, Media, MediaSource, Output, PatternKind, Shape, Surface};
+use om_project::{Canvas, Media, MediaSource, Output, PatternKind, Playback, Shape, Surface};
+use om_time::{Rate, RationalTime, Speed};
 use om_types::{MediaId, OutputId, SurfaceId, UnitInterval};
 
 use crate::canvas::{Drag, begin_drag, dragged_shape, fit_rect, to_screen};
@@ -41,6 +45,7 @@ pub struct OpenMapperApp {
     /// Commands queued while drawing, applied after the frame's UI pass.
     pending: Vec<(Command, Option<String>)>,
     end_coalescing: bool,
+    transport: Transport,
 }
 
 #[derive(Debug, Default)]
@@ -54,10 +59,17 @@ impl OpenMapperApp {
     /// falls back to an empty project and shows the error. Without a wgpu
     /// render state the UI runs but cannot show the canvas.
     #[must_use]
-    pub fn new(cc: &eframe::CreationContext<'_>, path: Option<PathBuf>) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        path: Option<PathBuf>,
+        opener: Option<Arc<dyn VideoOpener>>,
+    ) -> Self {
         let mut app = Self {
             session: Session::new("Untitled"),
-            viewer: cc.wgpu_render_state.as_ref().map(Viewer::new),
+            viewer: cc
+                .wgpu_render_state
+                .as_ref()
+                .map(|rs| Viewer::new(rs, opener)),
             selected: None,
             path_input: String::from("untitled.omproj"),
             media_path_input: String::new(),
@@ -70,6 +82,7 @@ impl OpenMapperApp {
             last_poll: None,
             pending: Vec::new(),
             end_coalescing: false,
+            transport: Transport::default(),
         };
         if app.viewer.is_none() {
             app.error("No GPU renderer available; the canvas cannot be shown.");
@@ -168,9 +181,6 @@ impl OpenMapperApp {
             }
             Err(e) => self.display_error = Some(e.to_string()),
         }
-        if let Some(v) = &mut self.viewer {
-            v.retry_media();
-        }
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
@@ -237,6 +247,20 @@ impl OpenMapperApp {
             ui.separator();
             ui.label("Project file:");
             ui.add(egui::TextEdit::singleline(&mut self.path_input).desired_width(280.0));
+            ui.separator();
+            let now = Instant::now();
+            let playing = self.transport.is_playing();
+            if ui.button(if playing { "Pause" } else { "Play" }).clicked() {
+                if playing {
+                    self.transport.pause(now);
+                } else {
+                    self.transport.play(now);
+                }
+            }
+            if ui.button("Restart").clicked() {
+                self.transport.seek(RationalTime::ZERO, now);
+            }
+            ui.monospace(clock(self.transport.time(now)));
         });
     }
 
@@ -350,6 +374,7 @@ impl OpenMapperApp {
                             id: MediaId::new(),
                             name: label.trim_start_matches("+ ").to_owned(),
                             source: MediaSource::Pattern { pattern },
+                            playback: Default::default(),
                             extensions: Default::default(),
                         },
                         index: None,
@@ -360,7 +385,7 @@ impl OpenMapperApp {
         ui.horizontal(|ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.media_path_input)
-                    .hint_text("image file path (PNG/JPEG)")
+                    .hint_text("image, video or image-sequence folder path")
                     .desired_width(170.0),
             );
             let path = self.media_path_input.trim().to_owned();
@@ -377,7 +402,8 @@ impl OpenMapperApp {
                     media: Media {
                         id: MediaId::new(),
                         name,
-                        source: MediaSource::Image { path: stored },
+                        source: source_for_path(&chosen, stored),
+                        playback: Default::default(),
                         extensions: Default::default(),
                     },
                     index: None,
@@ -385,20 +411,15 @@ impl OpenMapperApp {
                 self.media_path_input.clear();
             }
         });
-        let media: Vec<(MediaId, String)> = self
-            .session
-            .project()
-            .media
-            .iter()
-            .map(|m| (m.id, m.name.clone()))
-            .collect();
-        for (id, name) in media {
+        let show = self.transport.time(Instant::now());
+        let media = self.session.project().media.clone();
+        for m in media {
+            let status = self
+                .viewer
+                .as_ref()
+                .and_then(|v| v.media.status(self.session.project(), m.id, show));
             ui.horizontal(|ui| {
-                let err = self
-                    .viewer
-                    .as_ref()
-                    .and_then(|v| v.media.error(id).map(str::to_owned));
-                match err {
+                match status.as_ref().and_then(|s| s.error.clone()) {
                     Some(e) => {
                         ui.colored_label(ui.visuals().error_fg_color, "missing")
                             .on_hover_text(e);
@@ -407,11 +428,57 @@ impl OpenMapperApp {
                         ui.label("•");
                     }
                 }
-                ui.label(name);
+                let label = ui.label(&m.name);
+                if let Some(summary) = status.as_ref().and_then(|s| s.summary.clone()) {
+                    label.on_hover_text(summary);
+                }
                 if ui.small_button("Remove").clicked() {
-                    self.queue(Command::RemoveMedia { id });
+                    self.queue(Command::RemoveMedia { id: m.id });
                 }
             });
+            if m.source.is_time_based() {
+                ui.horizontal(|ui| {
+                    ui.add_space(14.0);
+                    let mut pb = m.playback;
+                    if ui.checkbox(&mut pb.looping, "Loop").changed() {
+                        self.queue(Command::SetMediaPlayback {
+                            id: m.id,
+                            playback: pb,
+                        });
+                    }
+                    let mut percent = pb.speed.num() * 100 / pb.speed.den();
+                    let resp = ui.add(
+                        egui::DragValue::new(&mut percent)
+                            .range(-1600..=1600)
+                            .suffix("%")
+                            .speed(1.0),
+                    );
+                    if resp.changed()
+                        && let Ok(speed) = Speed::from_percent(percent)
+                    {
+                        self.queue_coalescing(
+                            Command::SetMediaPlayback {
+                                id: m.id,
+                                playback: Playback { speed, ..pb },
+                            },
+                            format!("speed:{}", m.id),
+                        );
+                    }
+                    if resp.drag_stopped() || resp.lost_focus() {
+                        self.end_coalescing = true;
+                    }
+                    if ui.small_button("Restart").clicked()
+                        && let Some(v) = &mut self.viewer
+                    {
+                        v.media.restart(m.id, show);
+                    }
+                    if let Some(st) = &status
+                        && let (Some(p), Some(d)) = (st.position, st.duration)
+                    {
+                        ui.weak(format!("{} / {}", clock(p), clock(d)));
+                    }
+                });
+            }
         }
     }
 
@@ -641,7 +708,11 @@ impl OpenMapperApp {
     fn canvas_view(&mut self, ui: &mut egui::Ui) {
         let project_dir = self.session.project_dir().map(PathBuf::from);
         let texture = match &mut self.viewer {
-            Some(v) => v.update(self.session.project(), project_dir.as_deref()),
+            Some(v) => v.update(
+                self.session.project(),
+                project_dir.as_deref(),
+                self.transport.time(Instant::now()),
+            ),
             None => None,
         };
         let canvas = self.session.project().canvas;
@@ -830,6 +901,35 @@ impl OpenMapperApp {
     }
 }
 
+/// `m:ss.mmm` for display.
+fn clock(t: RationalTime) -> String {
+    let ms = t.to_ticks_floor(1000).unwrap_or(0).max(0);
+    format!("{}:{:02}.{:03}", ms / 60_000, (ms / 1000) % 60, ms % 1000)
+}
+
+/// Picks the media source kind from a chosen path.
+fn source_for_path(chosen: &std::path::Path, stored: String) -> MediaSource {
+    const VIDEO: &[&str] = &[
+        "mp4", "mov", "m4v", "mkv", "webm", "avi", "mxf", "mpg", "mpeg", "ts",
+    ];
+    if chosen.is_dir() {
+        return MediaSource::Sequence {
+            path: stored,
+            rate: Rate::FPS_30,
+        };
+    }
+    let ext = chosen
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    if VIDEO.contains(&ext.as_str()) {
+        MediaSource::Video { path: stored }
+    } else {
+        MediaSource::Image { path: stored }
+    }
+}
+
 fn open_message(path: &std::path::Path, report: &OpenReport) -> String {
     let mut msg = format!("Opened {}", path.display());
     if let Some(v) = report.migrated_from {
@@ -864,7 +964,11 @@ impl eframe::App for OpenMapperApp {
         egui::CentralPanel::default().show(ui, |ui| self.canvas_view(ui));
         self.output_windows(&ctx);
         self.apply_pending();
-        // Keep polling displays/media even when idle.
-        ctx.request_repaint_after(POLL_INTERVAL);
+        if self.transport.is_playing() {
+            ctx.request_repaint();
+        } else {
+            // Keep polling displays/media even when idle.
+            ctx.request_repaint_after(POLL_INTERVAL);
+        }
     }
 }

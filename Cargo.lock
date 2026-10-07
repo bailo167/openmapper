@@ -2476,6 +2476,7 @@ version = "0.1.0"
 dependencies = [
  "om-geom",
  "om-project",
+ "om-time",
  "om-types",
  "proptest",
  "serde",
@@ -2491,6 +2492,7 @@ dependencies = [
  "om-command",
  "om-media-core",
  "om-project",
+ "om-time",
  "om-types",
  "tempfile",
  "thiserror 2.0.21",
@@ -2608,9 +2610,11 @@ dependencies = [
  "om-engine",
  "om-geom",
  "om-gpu",
+ "om-media-core",
  "om-output",
  "om-project",
  "om-render",
+ "om-time",
  "om-types",
 ]
 
@@ -2631,6 +2635,8 @@ name = "openmapper"
 version = "0.1.0"
 dependencies = [
  "eframe",
+ "om-media-core",
+ "om-media-ffmpeg",
  "om-ui-egui",
 ]
 
@@ -2643,9 +2649,12 @@ dependencies = [
  "om-command",
  "om-engine",
  "om-gpu",
+ "om-media-core",
+ "om-media-ffmpeg",
  "om-output",
  "om-project",
  "om-render",
+ "om-time",
  "serde_json",
  "tempfile",
 ]

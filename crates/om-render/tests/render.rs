@@ -53,6 +53,7 @@ fn project(w: u32, h: u32, surfaces: Vec<Surface>) -> Project {
             id,
             name: format!("{pattern:?}"),
             source: MediaSource::Pattern { pattern },
+            playback: Default::default(),
             extensions: Default::default(),
         });
     }
@@ -351,4 +352,30 @@ fn oversized_canvas_and_media_are_errors_not_panics() {
     let pr = project(8, 8, vec![]);
     c.render(&pr).unwrap();
     c.read_rgba8().unwrap();
+}
+
+#[test]
+fn per_frame_uploads_reuse_textures() {
+    let Some(g) = gpu() else { return };
+    let mut c = Compositor::new(g);
+    let pr = project(32, 32, vec![surface(1, Shape::full_quad(), GRID)]);
+    let a = StillImage::pattern(PatternKind::White, 16, 16).unwrap();
+    let b = StillImage::pattern(PatternKind::Checkerboard, 16, 16).unwrap();
+    c.set_image(GRID, &a).unwrap();
+    c.render(&pr).unwrap();
+    let before = c.resource_counts();
+    for i in 0..200 {
+        c.set_image(GRID, if i % 2 == 0 { &b } else { &a }).unwrap();
+        c.render(&pr).unwrap();
+    }
+    assert_eq!(c.resource_counts(), before);
+    // The last upload (a, white) is what renders.
+    assert!(
+        c.read_rgba8()
+            .unwrap()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|p| p[0] == 255)
+    );
 }

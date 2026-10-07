@@ -16,6 +16,8 @@ om-geom.workspace = true
 om-gpu.workspace = true
 om-render.workspace = true
 om-output.workspace = true
+om-media-core.workspace = true
+om-time.workspace = true
 egui.workspace = true
 eframe.workspace = true
 

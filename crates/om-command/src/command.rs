@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use om_project::{Canvas, DisplayTarget, Media, Output, Project, Shape, Surface};
+use om_project::{Canvas, DisplayTarget, Media, Output, Playback, Project, Shape, Surface};
 use om_types::{MediaId, OutputId, SurfaceId, UnitInterval};
 use serde::{Deserialize, Serialize};
 
@@ -52,6 +52,11 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         index: Option<usize>,
     },
+    /// Changes how a time-based media item plays.
+    SetMediaPlayback {
+        id: MediaId,
+        playback: Playback,
+    },
     /// Removes a media item. Rejected while any surface uses it.
     RemoveMedia {
         id: MediaId,
@@ -97,6 +102,7 @@ pub enum Event {
     SurfacesReordered,
     MediaAdded { id: MediaId },
     MediaRemoved { id: MediaId },
+    MediaChanged { id: MediaId },
     CanvasChanged,
     OutputAdded { id: OutputId },
     OutputRemoved { id: OutputId },
@@ -305,6 +311,17 @@ impl Command {
                     events: vec![Event::MediaAdded { id: media.id }],
                 })
             }
+            Self::SetMediaPlayback { id, playback } => {
+                let at = media_index(project, *id)?;
+                let old = std::mem::replace(&mut project.media[at].playback, *playback);
+                Ok(Applied {
+                    inverse: Self::SetMediaPlayback {
+                        id: *id,
+                        playback: old,
+                    },
+                    events: vec![Event::MediaChanged { id: *id }],
+                })
+            }
             Self::RemoveMedia { id } => {
                 let at = media_index(project, *id)?;
                 if let Some(s) = project.surfaces.iter().find(|s| s.media == Some(*id)) {
@@ -426,6 +443,7 @@ impl Command {
             Self::SetSurfaceShape { .. } => "Edit Shape",
             Self::SetSurfaceMedia { .. } => "Assign Media",
             Self::AddMedia { .. } => "Add Media",
+            Self::SetMediaPlayback { .. } => "Playback Settings",
             Self::RemoveMedia { .. } => "Remove Media",
             Self::SetCanvas { .. } => "Canvas Size",
             Self::AddOutput { .. } => "Add Output",

@@ -14,6 +14,19 @@ pub mod fixtures;
 
 pub use video::FfmpegVideo;
 
+/// [`om_media_core::VideoOpener`] backed by FFmpeg.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct FfmpegOpener;
+
+impl om_media_core::VideoOpener for FfmpegOpener {
+    fn open_video(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<Box<dyn om_media_core::MediaSource>, om_media_core::MediaError> {
+        Ok(Box::new(FfmpegVideo::open(path)?))
+    }
+}
+
 use std::sync::OnceLock;
 
 /// Licence profile of the loaded FFmpeg libraries.

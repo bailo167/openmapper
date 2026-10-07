@@ -10,10 +10,14 @@ use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand};
 use om_command::Command;
-use om_engine::{MediaLibrary, Session};
+use std::sync::Arc;
+
+use om_engine::{MediaRuntime, Session};
 use om_gpu::GpuContext;
+use om_media_core::VideoOpener;
 use om_project::{Project, store};
 use om_render::Compositor;
+use om_time::RationalTime;
 
 #[derive(Debug, Parser)]
 #[command(name = "openmapper-cli", version, about = "OpenMapper project tool")]
@@ -49,7 +53,12 @@ enum Action {
         path: PathBuf,
         #[arg(short, long)]
         out: PathBuf,
+        /// Show time in seconds (selects video frames exactly).
+        #[arg(long, default_value_t = 0.0)]
+        at: f64,
     },
+    /// Show FFmpeg version and licence profile of the loaded libraries.
+    Ffmpeg,
     /// List connected displays (index order used by outputs).
     Displays,
     /// Show the GPU adapter the renderer would use.
@@ -148,7 +157,15 @@ fn run(cli: Cli) -> Result<(), String> {
             println!("revision {}", session.project().revision);
             session.close().map_err(|e| e.to_string())
         }
-        Action::Render { path, out } => render(&path, &out),
+        Action::Render { path, out, at } => render(&path, &out, at),
+        Action::Ffmpeg => {
+            om_media_ffmpeg::init()?;
+            let info = om_media_ffmpeg::info();
+            println!("libavcodec {}", info.avcodec_version);
+            println!("licence:   {}", info.licence);
+            println!("configure: {}", info.configuration);
+            Ok(())
+        }
         Action::Displays => {
             let displays = om_output::list_displays().map_err(|e| e.to_string())?;
             for d in &displays {
@@ -169,31 +186,57 @@ fn run(cli: Cli) -> Result<(), String> {
 }
 
 /// Opens a project read-only and prepares a compositor with its media.
-fn prepare(path: &Path) -> Result<(Project, Compositor), String> {
+/// Opens a project read-only and prepares a compositor plus media runtime.
+fn prepare(path: &Path) -> Result<(Project, Compositor, MediaRuntime), String> {
     let project = store::load(path).map_err(|e| e.to_string())?.project;
     let gpu = GpuContext::headless().map_err(|e| e.to_string())?;
-    let mut compositor = Compositor::new(gpu);
-    let mut library = MediaLibrary::new();
-    library.sync(&project, path.parent());
-    for m in &project.media {
-        match library.image(m.id) {
-            Some(img) => {
-                if let Err(e) = compositor.set_image(m.id, img) {
-                    eprintln!("warning: media {:?}: {e}", m.name);
-                }
-            }
-            None => eprintln!(
-                "warning: media {:?} not loaded: {}",
-                m.name,
-                library.error(m.id).unwrap_or("unknown error")
-            ),
-        }
-    }
-    Ok((project, compositor))
+    let opener: Arc<dyn VideoOpener> = Arc::new(om_media_ffmpeg::FfmpegOpener);
+    Ok((
+        project,
+        Compositor::new(gpu),
+        MediaRuntime::new(Some(opener)),
+    ))
 }
 
-fn render(path: &Path, out: &Path) -> Result<(), String> {
-    let (project, mut compositor) = prepare(path)?;
+/// Loads the media frames for show time `t` (waiting for exact video
+/// frames) into the compositor, warning about anything that failed.
+fn load_media(
+    project: &Project,
+    dir: Option<&Path>,
+    compositor: &mut Compositor,
+    media: &mut MediaRuntime,
+    t: RationalTime,
+    warn: bool,
+) {
+    let changes = media.update_blocking(project, dir, t, Duration::from_secs(10));
+    for id in &changes.unload {
+        compositor.remove_image(*id);
+    }
+    for (id, img) in &changes.upload {
+        if let Err(e) = compositor.set_image(*id, img) {
+            eprintln!("warning: media {id}: {e}");
+        }
+    }
+    if warn {
+        for m in &project.media {
+            if let Some(err) = media.status(project, m.id, t).and_then(|s| s.error) {
+                eprintln!("warning: media {:?}: {err}", m.name);
+            }
+        }
+    }
+}
+
+fn render(path: &Path, out: &Path, at: f64) -> Result<(), String> {
+    let (project, mut compositor, mut media) = prepare(path)?;
+    let t = seconds(at)?;
+    load_media(
+        &project,
+        path.parent(),
+        &mut compositor,
+        &mut media,
+        t,
+        true,
+    );
     let report = compositor.render(&project).map_err(|e| e.to_string())?;
     for (id, reason) in &report.plan.skipped {
         eprintln!("note: surface {id} not drawn: {reason}");
@@ -206,8 +249,18 @@ fn render(path: &Path, out: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Show time from decimal seconds (millisecond precision).
+fn seconds(s: f64) -> Result<RationalTime, String> {
+    if !s.is_finite() || s < 0.0 {
+        return Err(format!("time {s} must be a non-negative number of seconds"));
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    let ms = (s * 1000.0).round() as i128;
+    RationalTime::new(ms, 1000).map_err(|e| e.to_string())
+}
+
 fn soak(path: &Path, seconds: u64) -> Result<(), String> {
-    let (project, mut compositor) = prepare(path)?;
+    let (project, mut compositor, mut media) = prepare(path)?;
     println!("gpu: {}", compositor.gpu().capabilities());
     let deadline = Instant::now() + Duration::from_secs(seconds);
     let mut frames: u64 = 0;
@@ -215,6 +268,15 @@ fn soak(path: &Path, seconds: u64) -> Result<(), String> {
     let mut next_report = Instant::now() + Duration::from_secs(10);
     let start = Instant::now();
     while Instant::now() < deadline {
+        let t = RationalTime::from_nanos(start.elapsed().as_nanos());
+        load_media(
+            &project,
+            path.parent(),
+            &mut compositor,
+            &mut media,
+            t,
+            frames == 0,
+        );
         compositor.render(&project).map_err(|e| e.to_string())?;
         // Read back periodically to force GPU completion and exercise that path.
         if frames.is_multiple_of(60) {

@@ -18,6 +18,7 @@ pub use player::{DEFAULT_QUEUE, PlayerStats, VideoPlayer};
 pub use sequence::ImageSequence;
 pub use source::{
     AudioBlock, AudioFormat, CursorStats, FrameCursor, MediaDescriptor, MediaSource, VideoFrame,
+    VideoOpener,
 };
 
 /// Largest accepted image dimension (matches the canvas limit).

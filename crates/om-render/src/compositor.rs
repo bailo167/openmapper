@@ -60,7 +60,8 @@ struct ItemUniform {
 }
 
 struct GpuImage {
-    _texture: wgpu::Texture,
+    texture: wgpu::Texture,
+    size: (u32, u32),
     bind_group: wgpu::BindGroup,
     bytes: u64,
 }
@@ -217,26 +218,44 @@ impl Compositor {
                 max,
             });
         }
-        let device = self.gpu.device();
         let size = wgpu::Extent3d {
             width: image.width(),
             height: image.height(),
             depth_or_array_layers: 1,
         };
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("om media"),
-            size,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: WORKING_FORMAT,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
         let texels = rgba8_srgb_to_linear_premul_f16(image.rgba8());
+        let dims = (image.width(), image.height());
+        // Video uploads every frame: reuse the texture when the size matches.
+        if !self.images.get(&id).is_some_and(|g| g.size == dims) {
+            let device = self.gpu.device();
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("om media"),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: WORKING_FORMAT,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let bind_group = texture_bind_group(device, &self.media_layout, &view, &self.sampler);
+            self.images.insert(
+                id,
+                GpuImage {
+                    texture,
+                    size: dims,
+                    bind_group,
+                    bytes: texels.len() as u64,
+                },
+            );
+        }
+        let Some(img) = self.images.get(&id) else {
+            return Ok(());
+        };
         self.gpu.queue().write_texture(
             wgpu::TexelCopyTextureInfo {
-                texture: &texture,
+                texture: &img.texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
@@ -248,16 +267,6 @@ impl Compositor {
                 rows_per_image: Some(image.height()),
             },
             size,
-        );
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let bind_group = texture_bind_group(device, &self.media_layout, &view, &self.sampler);
-        self.images.insert(
-            id,
-            GpuImage {
-                _texture: texture,
-                bind_group,
-                bytes: texels.len() as u64,
-            },
         );
         Ok(())
     }

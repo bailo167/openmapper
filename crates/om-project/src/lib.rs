@@ -14,8 +14,8 @@ pub mod store;
 
 pub use migrate::{CURRENT_VERSION, FORMAT};
 pub use schema::{
-    Canvas, DisplayTarget, Extensions, Media, MediaSource, Output, PatternKind, Project, Shape,
-    Show, Surface, Timebase,
+    Canvas, DisplayTarget, Extensions, Media, MediaSource, Output, PatternKind, Playback, Project,
+    Shape, Show, Surface, Timebase,
 };
 
 use std::collections::HashSet;
@@ -129,7 +129,7 @@ impl Project {
             if m.name.trim().is_empty() {
                 return invalid(format!("media {} has an empty name", m.id));
             }
-            if let MediaSource::Image { path } = &m.source
+            if let Some(path) = m.source.path()
                 && path.trim().is_empty()
             {
                 return invalid(format!("media {} has an empty path", m.id));

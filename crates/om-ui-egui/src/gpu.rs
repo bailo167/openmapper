@@ -5,10 +5,14 @@
 
 use eframe::egui;
 use eframe::egui_wgpu::{self, wgpu};
-use om_engine::MediaLibrary;
+use std::sync::Arc;
+
+use om_engine::MediaRuntime;
 use om_gpu::GpuContext;
+use om_media_core::VideoOpener;
 use om_project::Project;
 use om_render::{Compositor, FrameReport};
+use om_time::RationalTime;
 
 /// Format egui expects for user textures (sRGB-encoded values, see egui-wgpu).
 const PREVIEW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -25,7 +29,7 @@ pub struct Viewer {
     render_state: egui_wgpu::RenderState,
     compositor: Compositor,
     preview: Option<Preview>,
-    pub media: MediaLibrary,
+    pub media: MediaRuntime,
     pub last_frame: Option<FrameReport>,
     pub last_error: Option<String>,
 }
@@ -39,7 +43,10 @@ impl std::fmt::Debug for Viewer {
 }
 
 impl Viewer {
-    pub fn new(render_state: &egui_wgpu::RenderState) -> Self {
+    pub fn new(
+        render_state: &egui_wgpu::RenderState,
+        opener: Option<Arc<dyn VideoOpener>>,
+    ) -> Self {
         let gpu = GpuContext::from_parts(
             render_state.adapter.clone(),
             render_state.device.clone(),
@@ -49,7 +56,7 @@ impl Viewer {
             render_state: render_state.clone(),
             compositor: Compositor::new(gpu),
             preview: None,
-            media: MediaLibrary::new(),
+            media: MediaRuntime::new(opener),
             last_frame: None,
             last_error: None,
         }
@@ -70,8 +77,9 @@ impl Viewer {
         &mut self,
         project: &Project,
         project_dir: Option<&std::path::Path>,
+        show: RationalTime,
     ) -> Option<egui::TextureId> {
-        let changes = self.media.sync(project, project_dir);
+        let changes = self.media.update(project, project_dir, show);
         self.apply_media(&changes);
         match self.render(project) {
             Ok(id) => {
@@ -85,20 +93,12 @@ impl Viewer {
         }
     }
 
-    /// Retries media that failed to load (missing files may have appeared).
-    pub fn retry_media(&mut self) {
-        let changes = self.media.retry_failed();
-        self.apply_media(&changes);
-    }
-
     fn apply_media(&mut self, changes: &om_engine::MediaChanges) {
-        for id in &changes.unloaded {
+        for id in &changes.unload {
             self.compositor.remove_image(*id);
         }
-        for id in &changes.loaded {
-            if let Some(img) = self.media.image(*id)
-                && let Err(e) = self.compositor.set_image(*id, img)
-            {
+        for (id, img) in &changes.upload {
+            if let Err(e) = self.compositor.set_image(*id, img) {
                 self.last_error = Some(e.to_string());
             }
         }

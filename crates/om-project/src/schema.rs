@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 
 use om_geom::Point2;
-use om_time::{DEFAULT_TICKS_PER_SECOND, I128Str};
+use om_time::{DEFAULT_TICKS_PER_SECOND, I128Str, Rate, Speed};
 use om_types::{Finite, MediaId, OutputId, ProjectId, SurfaceId, UnitInterval};
 use serde::{Deserialize, Serialize};
 
@@ -87,8 +87,32 @@ pub struct Media {
     pub id: MediaId,
     pub name: String,
     pub source: MediaSource,
+    /// Time-based media only (video, sequences); ignored for stills.
+    #[serde(default)]
+    pub playback: Playback,
     #[serde(default)]
     pub extensions: Extensions,
+}
+
+/// How time-based media plays.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Playback {
+    /// Restart at the end (or wrap at the start when reversed).
+    #[serde(default = "default_true")]
+    pub looping: bool,
+    /// Exact playback speed; negative plays in reverse.
+    #[serde(default)]
+    pub speed: Speed,
+}
+
+impl Default for Playback {
+    fn default() -> Self {
+        Self {
+            looping: true,
+            speed: Speed::NORMAL,
+        }
+    }
 }
 
 /// Where a media item's pixels come from.
@@ -98,8 +122,29 @@ pub enum MediaSource {
     /// A still image file. `path` is relative to the project file's
     /// directory when possible (forward slashes); see DECISIONS.md D-009.
     Image { path: String },
+    /// A video file decoded by the media adapter (FFmpeg).
+    Video { path: String },
+    /// A folder of numbered still images played at `rate`.
+    Sequence { path: String, rate: Rate },
     /// A procedurally generated pattern; needs no files.
     Pattern { pattern: PatternKind },
+}
+
+impl MediaSource {
+    /// Stored file or folder path, for file-backed sources.
+    #[must_use]
+    pub fn path(&self) -> Option<&str> {
+        match self {
+            Self::Image { path } | Self::Video { path } | Self::Sequence { path, .. } => Some(path),
+            Self::Pattern { .. } => None,
+        }
+    }
+
+    /// True for sources with a timeline (video, sequences).
+    #[must_use]
+    pub fn is_time_based(&self) -> bool {
+        matches!(self, Self::Video { .. } | Self::Sequence { .. })
+    }
 }
 
 /// Built-in generated patterns (used for calibration and tests).
