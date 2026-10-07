@@ -138,7 +138,16 @@ impl Resampler {
         // stereo f32 frames (one plane for packed output); `in_ptr` is either
         // null (flush) or the frame's plane pointers with `in_samples` frames.
         let n = unsafe {
-            ff::ffi::swr_convert(self.ctx, &raw mut out_ptr, capacity + 1, in_ptr, in_samples)
+            // `as _`: FFmpeg 6.x declares the input as `const uint8_t **`,
+            // 7+ as `const uint8_t * const *`; swr_convert never writes it.
+            #[allow(clippy::ptr_cast_constness, trivial_casts)]
+            ff::ffi::swr_convert(
+                self.ctx,
+                &raw mut out_ptr,
+                capacity + 1,
+                in_ptr as _,
+                in_samples,
+            )
         };
         if n < 0 {
             return Err(format!("swr_convert failed ({n})"));
