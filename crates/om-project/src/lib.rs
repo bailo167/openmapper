@@ -13,7 +13,10 @@ mod schema;
 pub mod store;
 
 pub use migrate::{CURRENT_VERSION, FORMAT};
-pub use schema::{Extensions, Media, Output, Project, Show, Surface, Timebase};
+pub use schema::{
+    Canvas, DisplayTarget, Extensions, Media, MediaSource, Output, PatternKind, Project, Shape,
+    Show, Surface, Timebase,
+};
 
 use std::collections::HashSet;
 
@@ -55,6 +58,7 @@ impl Project {
             revision: 0,
             name: name.into(),
             timebase: Timebase::default(),
+            canvas: Canvas::default(),
             media: Vec::new(),
             surfaces: Vec::new(),
             outputs: Vec::new(),
@@ -97,6 +101,17 @@ impl Project {
         if self.name.trim().is_empty() {
             return invalid("project name is empty".into());
         }
+        let Canvas { width, height } = self.canvas;
+        if width == 0
+            || height == 0
+            || width > Canvas::MAX_DIMENSION
+            || height > Canvas::MAX_DIMENSION
+        {
+            return invalid(format!(
+                "canvas {width}x{height} is outside 1..={}",
+                Canvas::MAX_DIMENSION
+            ));
+        }
         let mut seen = HashSet::new();
         for s in &self.surfaces {
             if !seen.insert(s.id) {
@@ -106,10 +121,25 @@ impl Project {
                 return invalid(format!("surface {} has an empty name", s.id));
             }
         }
-        let mut seen = HashSet::new();
+        let mut media_ids = HashSet::new();
         for m in &self.media {
-            if !seen.insert(m.id) {
+            if !media_ids.insert(m.id) {
                 return invalid(format!("duplicate media id {}", m.id));
+            }
+            if m.name.trim().is_empty() {
+                return invalid(format!("media {} has an empty name", m.id));
+            }
+            if let MediaSource::Image { path } = &m.source
+                && path.trim().is_empty()
+            {
+                return invalid(format!("media {} has an empty path", m.id));
+            }
+        }
+        for s in &self.surfaces {
+            if let Some(mid) = s.media
+                && !media_ids.contains(&mid)
+            {
+                return invalid(format!("surface {} uses missing media {mid}", s.id));
             }
         }
         let mut seen = HashSet::new();
@@ -128,6 +158,16 @@ impl Project {
 
     pub fn surface_mut(&mut self, id: om_types::SurfaceId) -> Option<&mut Surface> {
         self.surfaces.iter_mut().find(|s| s.id == id)
+    }
+
+    #[must_use]
+    pub fn media_item(&self, id: om_types::MediaId) -> Option<&Media> {
+        self.media.iter().find(|m| m.id == id)
+    }
+
+    #[must_use]
+    pub fn output(&self, id: om_types::OutputId) -> Option<&Output> {
+        self.outputs.iter().find(|o| o.id == id)
     }
 }
 

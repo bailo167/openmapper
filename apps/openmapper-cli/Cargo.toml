@@ -15,6 +15,10 @@ path = "src/main.rs"
 om-project.workspace = true
 om-command.workspace = true
 om-engine.workspace = true
+om-gpu.workspace = true
+om-render.workspace = true
+om-output.workspace = true
+image.workspace = true
 clap.workspace = true
 serde_json.workspace = true
 

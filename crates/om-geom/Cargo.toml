@@ -1,6 +1,6 @@
 [package]
-name = "om-command"
-description = "OpenMapper typed command bus: validated mutations, events, undo/redo"
+name = "om-geom"
+description = "OpenMapper geometry: points, homographies, affine triangle maps, polygon tests"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,13 +9,12 @@ publish.workspace = true
 
 [dependencies]
 om-types.workspace = true
-om-project.workspace = true
+glam.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-om-geom.workspace = true
+serde_json.workspace = true
 proptest.workspace = true
 
 [lints]

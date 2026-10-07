@@ -2,8 +2,11 @@
 
 use crate::Event;
 use crate::{Command, Document, HistoryError};
-use om_project::{Project, Surface};
-use om_types::{ProjectId, SurfaceId, UnitInterval};
+use om_geom::Point2;
+use om_project::{
+    Canvas, DisplayTarget, Media, MediaSource, Output, PatternKind, Project, Shape, Surface,
+};
+use om_types::{MediaId, OutputId, ProjectId, SurfaceId, UnitInterval};
 use proptest::prelude::*;
 
 fn sid(n: u128) -> SurfaceId {
@@ -154,7 +157,76 @@ fn commands_have_stable_json_form() {
     );
 }
 
+fn arb_shape() -> impl Strategy<Value = Shape> {
+    let pt = (-0.5f64..1.5, -0.5f64..1.5).prop_map(|(x, y)| Point2::new(x, y).unwrap());
+    prop_oneof![
+        proptest::array::uniform4(pt.clone()).prop_map(|corners| Shape::Quad {
+            corners,
+            uv: Point2::unit_square()
+        }),
+        proptest::array::uniform3(pt).prop_map(|corners| Shape::Triangle {
+            corners,
+            uv: Point2::unit_triangle()
+        }),
+    ]
+}
+
+fn arb_new_command() -> impl Strategy<Value = Command> {
+    let sid_s = (1u128..6).prop_map(sid);
+    let mid = (1u128..4).prop_map(MediaId::from_u128);
+    let oid = (1u128..3).prop_map(OutputId::from_u128);
+    prop_oneof![
+        (sid_s.clone(), arb_shape()).prop_map(|(id, shape)| Command::SetSurfaceShape { id, shape }),
+        (sid_s, proptest::option::of(mid.clone()))
+            .prop_map(|(id, media)| Command::SetSurfaceMedia { id, media }),
+        (mid.clone(), proptest::option::of(0usize..4)).prop_map(|(id, index)| Command::AddMedia {
+            media: Media {
+                id,
+                name: "m".into(),
+                source: MediaSource::Pattern {
+                    pattern: PatternKind::UvGrid
+                },
+                extensions: Default::default(),
+            },
+            index,
+        }),
+        mid.prop_map(|id| Command::RemoveMedia { id }),
+        (0u32..5000, 0u32..5000).prop_map(|(width, height)| Command::SetCanvas {
+            canvas: Canvas { width, height }
+        }),
+        oid.clone().prop_map(|id| Command::AddOutput {
+            output: Output {
+                id,
+                name: "o".into(),
+                enabled: false,
+                display: None,
+                extensions: Default::default(),
+            },
+            index: None,
+        }),
+        oid.clone().prop_map(|id| Command::RemoveOutput { id }),
+        (oid.clone(), proptest::option::of(any::<bool>())).prop_map(|(id, enabled)| {
+            Command::UpdateOutput {
+                id,
+                name: None,
+                enabled,
+            }
+        }),
+        (oid, proptest::option::of(0u32..3)).prop_map(|(id, i)| Command::SetOutputDisplay {
+            id,
+            display: i.map(|index| DisplayTarget {
+                name: format!("D{index}"),
+                index
+            }),
+        }),
+    ]
+}
+
 fn arb_command() -> impl Strategy<Value = Command> {
+    prop_oneof![arb_old_command(), arb_new_command()]
+}
+
+fn arb_old_command() -> impl Strategy<Value = Command> {
     let id = (1u128..6).prop_map(sid);
     prop_oneof![
         "[a-z]{0,4}".prop_map(|name| Command::SetProjectName { name }),
@@ -194,7 +266,7 @@ proptest! {
     /// redoing everything restores the end state, and replaying the applied
     /// commands (the journal) on the start state reproduces every step.
     #[test]
-    fn history_and_replay_are_exact(cmds in proptest::collection::vec(arb_command(), 0..40)) {
+    fn history_and_replay_are_exact(cmds in proptest::collection::vec(arb_command(), 0..60)) {
         let start = project();
         let mut d = Document::new(start.clone());
         let mut applied = Vec::new();
@@ -228,4 +300,42 @@ proptest! {
         fwd.revision = end.revision;
         prop_assert_eq!(&fwd, &end);
     }
+}
+
+#[test]
+fn media_in_use_cannot_be_removed() {
+    let mut d = Document::new(project());
+    let m = MediaId::from_u128(7);
+    d.execute(Command::AddMedia {
+        media: Media {
+            id: m,
+            name: "grid".into(),
+            source: MediaSource::Pattern {
+                pattern: PatternKind::UvGrid,
+            },
+            extensions: Default::default(),
+        },
+        index: None,
+    })
+    .unwrap();
+    d.execute(add(1)).unwrap();
+    d.execute(Command::SetSurfaceMedia {
+        id: sid(1),
+        media: Some(m),
+    })
+    .unwrap();
+    assert!(d.execute(Command::RemoveMedia { id: m }).is_err());
+    assert!(
+        d.execute(Command::SetSurfaceMedia {
+            id: sid(1),
+            media: Some(MediaId::from_u128(8))
+        })
+        .is_err()
+    );
+    d.execute(Command::SetSurfaceMedia {
+        id: sid(1),
+        media: None,
+    })
+    .unwrap();
+    d.execute(Command::RemoveMedia { id: m }).unwrap();
 }

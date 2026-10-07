@@ -5,8 +5,8 @@ and `prompts/`.
 
 | # | Milestone | Status |
 |---|---|---|
-| 1 | Foundation | done (pending 3-OS CI confirmation) |
-| 2 | Mapping renderer | **active** |
+| 1 | Foundation | **verified** (3-OS CI green) |
+| 2 | Mapping renderer | **active** — implemented; awaiting physical projector test |
 | 3 | Media engine | pending |
 | 4 | Surfaces, masks, effects, ISF | pending |
 | 5 | Control & show engine | pending |

@@ -42,3 +42,46 @@ does not declare a separate `wgpu` dependency.
 
 Gate A (full `cargo xtask ci`) runs on Linux for every push. macOS and Windows
 build/test only on pull requests, pushes to `main` and manual runs.
+
+## D-008 — Display enumeration via display-info (2026-10-07)
+
+egui/eframe place fullscreen windows by monitor *index* (winit order) but do
+not list monitors. `om-output` lists displays with `display-info`, which uses
+the same OS enumeration APIs as winit (CGGetActiveDisplayList, EnumDisplayMonitors,
+XRandR), so indices are assumed to agree. Outputs store the display *name*
+plus index and resolve by name first, so a re-plugged projector is found
+again; an unplugged display resolves to nothing rather than another screen.
+**Unverified until the physical projector test.** display-info pulls an
+unmaintained hash crate on Windows (RUSTSEC-2025-0057, ignored with reason in
+deny.toml); revisit at the Cross-platform milestone.
+
+## D-009 — Media path storage (2026-10-07)
+
+Image paths are stored relative to the project file's directory (with `/`)
+when the file lies under it, otherwise as given. Content hashes and the
+missing-media relink workflow arrive with the Plugins & resilience milestone.
+Failed loads are retried every 2 s in the GUI.
+
+## D-010 — Renderer design (2026-10-07)
+
+- `om-render` may depend on `om-media-core` (same layer) to consume frames.
+- Media is uploaded as linear, premultiplied `Rgba16Float` (converted on the
+  CPU), so bilinear filtering happens on premultiplied linear values.
+- Surfaces are drawn as triangle fans; the canvas→UV homography is evaluated
+  per pixel in the fragment shader (exact perspective, no subdivision).
+- Concave/degenerate shapes may be stored; they render nothing and the plan
+  reports why (the UI shows "Not drawn: …").
+- Goldens compare the GPU against an independent CPU reference renderer
+  rather than stored PNGs, so they are platform-independent and need no binary
+  fixtures. Tolerances: crates/om-render/tests/tolerances.md.
+- wgpu's default uncaptured-error handler panics; `om-gpu` records errors
+  instead and the compositor reports them, so a live show keeps running.
+- The GUI asks eframe for the adapter's full limits; canvas/media larger than
+  the GPU supports are rejected with an error.
+
+## D-011 — Output windows show the shared preview texture (2026-10-07)
+
+Output windows display the presented canvas texture scaled to the window.
+Pixel-exact per-output rendering (output regions, crops, soft-edge) is part of
+the Advanced mapping milestone; set the canvas to the projector's native size
+("Match canvas") for 1:1 output now.

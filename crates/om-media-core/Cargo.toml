@@ -1,6 +1,6 @@
 [package]
-name = "om-command"
-description = "OpenMapper typed command bus: validated mutations, events, undo/redo"
+name = "om-media-core"
+description = "OpenMapper media abstractions: still images and generated patterns"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,15 +8,12 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-om-types.workspace = true
 om-project.workspace = true
-serde.workspace = true
-serde_json.workspace = true
+image.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-om-geom.workspace = true
-proptest.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

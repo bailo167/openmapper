@@ -3,25 +3,44 @@
 //! an `om_command::Command` and sent through the [`Session`]; this crate never
 //! mutates the project directly.
 
-use std::path::PathBuf;
+mod canvas;
+mod gpu;
 
-use eframe::egui;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
+use eframe::egui::{self, Color32, Pos2, Stroke};
 use om_command::Command;
-use om_engine::{OpenReport, Session};
-use om_project::Surface;
-use om_types::{SurfaceId, UnitInterval};
+use om_engine::{OpenReport, Session, path_for_storage};
+use om_output::Display;
+use om_project::{Canvas, Media, MediaSource, Output, PatternKind, Shape, Surface};
+use om_types::{MediaId, OutputId, SurfaceId, UnitInterval};
+
+use crate::canvas::{Drag, begin_drag, dragged_shape, fit_rect, to_screen};
+use crate::gpu::Viewer;
+
+/// How often to re-enumerate displays and retry missing media.
+const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Top-level application state.
 #[derive(Debug)]
 pub struct OpenMapperApp {
     session: Session,
+    viewer: Option<Viewer>,
     selected: Option<SurfaceId>,
-    /// Text buffer for the "Save As" / "Open" path field.
+    /// Text buffer for the project / media path field.
     path_input: String,
+    media_path_input: String,
     status: Status,
-    /// Name being edited, committed on focus loss/enter.
     rename_buffer: Option<(SurfaceId, String)>,
     project_name_buffer: Option<String>,
+    drag: Option<Drag>,
+    displays: Vec<Display>,
+    display_error: Option<String>,
+    last_poll: Option<Instant>,
+    /// Commands queued while drawing, applied after the frame's UI pass.
+    pending: Vec<(Command, Option<String>)>,
+    end_coalescing: bool,
 }
 
 #[derive(Debug, Default)]
@@ -32,17 +51,29 @@ struct Status {
 
 impl OpenMapperApp {
     /// Starts with an empty project, or opens `path` if given. A failed open
-    /// falls back to an empty project and shows the error.
+    /// falls back to an empty project and shows the error. Without a wgpu
+    /// render state the UI runs but cannot show the canvas.
     #[must_use]
-    pub fn new(path: Option<PathBuf>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, path: Option<PathBuf>) -> Self {
         let mut app = Self {
             session: Session::new("Untitled"),
+            viewer: cc.wgpu_render_state.as_ref().map(Viewer::new),
             selected: None,
             path_input: String::from("untitled.omproj"),
+            media_path_input: String::new(),
             status: Status::default(),
             rename_buffer: None,
             project_name_buffer: None,
+            drag: None,
+            displays: Vec::new(),
+            display_error: None,
+            last_poll: None,
+            pending: Vec::new(),
+            end_coalescing: false,
         };
+        if app.viewer.is_none() {
+            app.error("No GPU renderer available; the canvas cannot be shown.");
+        }
         if let Some(p) = path {
             app.path_input = p.display().to_string();
             app.open(p);
@@ -64,9 +95,26 @@ impl OpenMapperApp {
         };
     }
 
-    fn run(&mut self, command: Command) {
-        if let Err(e) = self.session.execute(command) {
-            self.error(e.to_string());
+    fn queue(&mut self, command: Command) {
+        self.pending.push((command, None));
+    }
+
+    fn queue_coalescing(&mut self, command: Command, key: String) {
+        self.pending.push((command, Some(key)));
+    }
+
+    fn apply_pending(&mut self) {
+        for (cmd, key) in std::mem::take(&mut self.pending) {
+            let result = match key {
+                Some(k) => self.session.execute_coalescing(cmd, k),
+                None => self.session.execute(cmd),
+            };
+            if let Err(e) = result {
+                self.error(e.to_string());
+            }
+        }
+        if std::mem::take(&mut self.end_coalescing) {
+            self.session.break_coalescing();
         }
     }
 
@@ -75,6 +123,7 @@ impl OpenMapperApp {
             Ok((session, report)) => {
                 self.session = session;
                 self.selected = None;
+                self.drag = None;
                 self.info(open_message(&path, &report));
             }
             Err(e) => self.error(format!("Could not open: {e}")),
@@ -107,12 +156,28 @@ impl OpenMapperApp {
         }
     }
 
+    fn poll(&mut self) {
+        if self.last_poll.is_some_and(|t| t.elapsed() < POLL_INTERVAL) {
+            return;
+        }
+        self.last_poll = Some(Instant::now());
+        match om_output::list_displays() {
+            Ok(d) => {
+                self.displays = d;
+                self.display_error = None;
+            }
+            Err(e) => self.display_error = Some(e.to_string()),
+        }
+        if let Some(v) = &mut self.viewer {
+            v.retry_media();
+        }
+    }
+
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         use egui::{Key, KeyboardShortcut, Modifiers};
         let undo = KeyboardShortcut::new(Modifiers::COMMAND, Key::Z);
         let redo = KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
         let save = KeyboardShortcut::new(Modifiers::COMMAND, Key::S);
-        // Check the longer shortcut first so Cmd+Shift+Z is not eaten by Cmd+Z.
         if ctx.input_mut(|i| i.consume_shortcut(&redo)) {
             self.redo();
         } else if ctx.input_mut(|i| i.consume_shortcut(&undo)) {
@@ -170,34 +235,78 @@ impl OpenMapperApp {
                 }
             });
             ui.separator();
-            ui.label("Path:");
+            ui.label("Project file:");
             ui.add(egui::TextEdit::singleline(&mut self.path_input).desired_width(280.0));
         });
     }
 
-    fn surface_list(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Project");
-        let current = self.session.project().name.clone();
-        let buffer = self.project_name_buffer.get_or_insert(current.clone());
-        let resp = ui.text_edit_singleline(buffer);
-        if resp.lost_focus()
-            && let Some(name) = self.project_name_buffer.take()
-            && name != current
-        {
-            self.run(Command::SetProjectName { name });
-        }
+    fn left_panel(&mut self, ui: &mut egui::Ui) {
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            ui.heading("Project");
+            let current = self.session.project().name.clone();
+            let buffer = self.project_name_buffer.get_or_insert(current.clone());
+            if ui.text_edit_singleline(buffer).lost_focus()
+                && let Some(name) = self.project_name_buffer.take()
+                && name != current
+            {
+                self.queue(Command::SetProjectName { name });
+            }
+            self.canvas_settings(ui);
+            ui.separator();
+            self.surface_list(ui);
+            ui.separator();
+            self.media_list(ui);
+            ui.separator();
+            self.output_list(ui);
+        });
+    }
 
-        ui.separator();
+    fn canvas_settings(&mut self, ui: &mut egui::Ui) {
+        let Canvas {
+            mut width,
+            mut height,
+        } = self.session.project().canvas;
+        ui.horizontal(|ui| {
+            ui.label("Canvas");
+            let max = Canvas::MAX_DIMENSION;
+            let w = ui.add(
+                egui::DragValue::new(&mut width)
+                    .range(1..=max)
+                    .suffix(" px"),
+            );
+            ui.label("×");
+            let h = ui.add(
+                egui::DragValue::new(&mut height)
+                    .range(1..=max)
+                    .suffix(" px"),
+            );
+            if (w.changed() || h.changed()) && !(w.dragged() || h.dragged()) {
+                self.queue(Command::SetCanvas {
+                    canvas: Canvas { width, height },
+                });
+            }
+        });
+    }
+
+    fn surface_list(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.heading("Surfaces");
-            if ui.button("+ Add").clicked() {
-                let n = self.session.project().surfaces.len() + 1;
-                let id = SurfaceId::new();
-                self.run(Command::AddSurface {
-                    surface: Surface::new(id, format!("Surface {n}")),
-                    index: None,
-                });
-                self.selected = Some(id);
+            for (label, shape) in [
+                ("+ Quad", Shape::centred_quad()),
+                ("+ Triangle", Shape::centred_triangle()),
+            ] {
+                if ui.small_button(label).clicked() {
+                    let n = self.session.project().surfaces.len() + 1;
+                    let id = SurfaceId::new();
+                    let mut s = Surface::new(id, format!("Surface {n}"));
+                    s.shape = shape;
+                    s.media = self.session.project().media.first().map(|m| m.id);
+                    self.queue(Command::AddSurface {
+                        surface: s,
+                        index: None,
+                    });
+                    self.selected = Some(id);
+                }
             }
         });
         let surfaces: Vec<(SurfaceId, String, bool)> = self
@@ -205,6 +314,7 @@ impl OpenMapperApp {
             .project()
             .surfaces
             .iter()
+            .rev() // topmost first
             .map(|s| (s.id, s.name.clone(), s.enabled))
             .collect();
         if surfaces.is_empty() {
@@ -226,9 +336,193 @@ impl OpenMapperApp {
         }
     }
 
+    fn media_list(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Media");
+        ui.horizontal(|ui| {
+            for (label, pattern) in [
+                ("+ UV grid", PatternKind::UvGrid),
+                ("+ Checker", PatternKind::Checkerboard),
+                ("+ White", PatternKind::White),
+            ] {
+                if ui.small_button(label).clicked() {
+                    self.queue(Command::AddMedia {
+                        media: Media {
+                            id: MediaId::new(),
+                            name: label.trim_start_matches("+ ").to_owned(),
+                            source: MediaSource::Pattern { pattern },
+                            extensions: Default::default(),
+                        },
+                        index: None,
+                    });
+                }
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.media_path_input)
+                    .hint_text("image file path (PNG/JPEG)")
+                    .desired_width(170.0),
+            );
+            let path = self.media_path_input.trim().to_owned();
+            if ui
+                .add_enabled(!path.is_empty(), egui::Button::new("Add"))
+                .clicked()
+            {
+                let chosen = PathBuf::from(&path);
+                let name = chosen
+                    .file_name()
+                    .map_or_else(|| path.clone(), |n| n.to_string_lossy().into_owned());
+                let stored = path_for_storage(self.session.project_dir(), &chosen);
+                self.queue(Command::AddMedia {
+                    media: Media {
+                        id: MediaId::new(),
+                        name,
+                        source: MediaSource::Image { path: stored },
+                        extensions: Default::default(),
+                    },
+                    index: None,
+                });
+                self.media_path_input.clear();
+            }
+        });
+        let media: Vec<(MediaId, String)> = self
+            .session
+            .project()
+            .media
+            .iter()
+            .map(|m| (m.id, m.name.clone()))
+            .collect();
+        for (id, name) in media {
+            ui.horizontal(|ui| {
+                let err = self
+                    .viewer
+                    .as_ref()
+                    .and_then(|v| v.media.error(id).map(str::to_owned));
+                match err {
+                    Some(e) => {
+                        ui.colored_label(ui.visuals().error_fg_color, "missing")
+                            .on_hover_text(e);
+                    }
+                    None => {
+                        ui.label("•");
+                    }
+                }
+                ui.label(name);
+                if ui.small_button("Remove").clicked() {
+                    self.queue(Command::RemoveMedia { id });
+                }
+            });
+        }
+    }
+
+    fn output_list(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.heading("Outputs");
+            if ui.small_button("+ Output").clicked() {
+                let n = self.session.project().outputs.len() + 1;
+                let display = self
+                    .displays
+                    .iter()
+                    .find(|d| !d.is_primary)
+                    .map(Display::target);
+                self.queue(Command::AddOutput {
+                    output: Output {
+                        id: OutputId::new(),
+                        name: format!("Output {n}"),
+                        enabled: false,
+                        display,
+                        extensions: Default::default(),
+                    },
+                    index: None,
+                });
+            }
+        });
+        if let Some(e) = &self.display_error {
+            ui.colored_label(ui.visuals().warn_fg_color, e);
+        }
+        let outputs = self.session.project().outputs.clone();
+        for o in outputs {
+            ui.group(|ui| {
+                ui.horizontal(|ui| {
+                    let mut enabled = o.enabled;
+                    if ui.checkbox(&mut enabled, &o.name).changed() {
+                        self.queue(Command::UpdateOutput {
+                            id: o.id,
+                            name: None,
+                            enabled: Some(enabled),
+                        });
+                    }
+                    if ui.small_button("Remove").clicked() {
+                        self.queue(Command::RemoveOutput { id: o.id });
+                    }
+                });
+                let resolved = o
+                    .display
+                    .as_ref()
+                    .and_then(|t| om_output::resolve(t, &self.displays));
+                let current = o
+                    .display
+                    .as_ref()
+                    .map_or("(no display)".to_owned(), |t| t.name.clone());
+                egui::ComboBox::from_id_salt(o.id)
+                    .selected_text(current)
+                    .width(200.0)
+                    .show_ui(ui, |ui| {
+                        for d in &self.displays {
+                            if ui
+                                .selectable_label(
+                                    resolved.is_some_and(|r| r.index == d.index),
+                                    d.to_string(),
+                                )
+                                .clicked()
+                            {
+                                self.pending.push((
+                                    Command::SetOutputDisplay {
+                                        id: o.id,
+                                        display: Some(d.target()),
+                                    },
+                                    None,
+                                ));
+                            }
+                        }
+                    });
+                match resolved {
+                    Some(d) => {
+                        let (w, h) = d.native_size();
+                        ui.horizontal(|ui| {
+                            ui.weak(format!("connected, {w}×{h}"));
+                            let canvas = self.session.project().canvas;
+                            if (canvas.width, canvas.height) != (w, h)
+                                && ui.small_button("Match canvas").clicked()
+                            {
+                                self.pending.push((
+                                    Command::SetCanvas {
+                                        canvas: Canvas {
+                                            width: w,
+                                            height: h,
+                                        },
+                                    },
+                                    None,
+                                ));
+                            }
+                        });
+                    }
+                    None if o.display.is_some() => {
+                        ui.colored_label(ui.visuals().warn_fg_color, "display not connected");
+                    }
+                    None => {}
+                }
+            });
+        }
+    }
+
     fn inspector(&mut self, ui: &mut egui::Ui) {
         let Some(id) = self.selected else {
             ui.weak("Select a surface to edit it.");
+            if let Some(v) = &self.viewer {
+                ui.separator();
+                ui.weak(v.gpu_summary());
+            }
             return;
         };
         let Some(surface) = self.session.project().surface(id).cloned() else {
@@ -241,12 +535,11 @@ impl OpenMapperApp {
             Some((bid, text)) if *bid == id => text,
             slot => &mut slot.insert((id, surface.name.clone())).1,
         };
-        let resp = ui.text_edit_singleline(buffer);
-        if resp.lost_focus()
+        if ui.text_edit_singleline(buffer).lost_focus()
             && let Some((_, name)) = self.rename_buffer.take()
             && name != surface.name
         {
-            self.run(Command::UpdateSurface {
+            self.queue(Command::UpdateSurface {
                 id,
                 name: Some(name),
                 enabled: None,
@@ -256,7 +549,7 @@ impl OpenMapperApp {
 
         let mut enabled = surface.enabled;
         if ui.checkbox(&mut enabled, "Enabled").changed() {
-            self.run(Command::UpdateSurface {
+            self.queue(Command::UpdateSurface {
                 id,
                 name: None,
                 enabled: Some(enabled),
@@ -267,28 +560,245 @@ impl OpenMapperApp {
         let mut opacity = surface.opacity.get();
         let resp = ui.add(egui::Slider::new(&mut opacity, 0.0..=1.0).text("Opacity"));
         if resp.changed() {
-            let cmd = Command::UpdateSurface {
-                id,
-                name: None,
-                enabled: None,
-                opacity: Some(UnitInterval::saturating(opacity)),
-            };
-            if let Err(e) = self
-                .session
-                .execute_coalescing(cmd, format!("opacity:{id}"))
-            {
-                self.error(e.to_string());
-            }
+            self.queue_coalescing(
+                Command::UpdateSurface {
+                    id,
+                    name: None,
+                    enabled: None,
+                    opacity: Some(UnitInterval::saturating(opacity)),
+                },
+                format!("opacity:{id}"),
+            );
         }
         if resp.drag_stopped() || resp.lost_focus() {
-            self.session.break_coalescing();
+            self.end_coalescing = true;
         }
+
+        let media_name = surface
+            .media
+            .and_then(|m| self.session.project().media_item(m))
+            .map_or("(none)".to_owned(), |m| m.name.clone());
+        egui::ComboBox::from_label("Media")
+            .selected_text(media_name)
+            .show_ui(ui, |ui| {
+                if ui
+                    .selectable_label(surface.media.is_none(), "(none)")
+                    .clicked()
+                {
+                    self.pending
+                        .push((Command::SetSurfaceMedia { id, media: None }, None));
+                }
+                for m in &self.session.project().media {
+                    if ui
+                        .selectable_label(surface.media == Some(m.id), &m.name)
+                        .clicked()
+                    {
+                        self.pending.push((
+                            Command::SetSurfaceMedia {
+                                id,
+                                media: Some(m.id),
+                            },
+                            None,
+                        ));
+                    }
+                }
+            });
+
+        if let Some(reason) = self
+            .viewer
+            .as_ref()
+            .and_then(|v| v.last_frame.as_ref())
+            .and_then(|f| f.plan.skipped.iter().find(|(s, _)| *s == id))
+            .map(|(_, r)| r.to_string())
+        {
+            ui.colored_label(ui.visuals().warn_fg_color, format!("Not drawn: {reason}"));
+        }
+
+        ui.horizontal(|ui| {
+            if ui.button("Reset shape").clicked() {
+                let shape = match surface.shape {
+                    Shape::Quad { .. } => Shape::centred_quad(),
+                    Shape::Triangle { .. } => Shape::centred_triangle(),
+                };
+                self.queue(Command::SetSurfaceShape { id, shape });
+            }
+            if ui.button("Fill canvas").clicked() {
+                self.queue(Command::SetSurfaceShape {
+                    id,
+                    shape: Shape::full_quad(),
+                });
+            }
+        });
+        ui.weak("Drag corners on the canvas; drag inside to move.");
 
         ui.add_space(12.0);
         if ui.button("Remove surface").clicked() {
-            self.run(Command::RemoveSurface { id });
+            self.queue(Command::RemoveSurface { id });
             self.selected = None;
         }
+    }
+
+    fn canvas_view(&mut self, ui: &mut egui::Ui) {
+        let project_dir = self.session.project_dir().map(PathBuf::from);
+        let texture = match &mut self.viewer {
+            Some(v) => v.update(self.session.project(), project_dir.as_deref()),
+            None => None,
+        };
+        let canvas = self.session.project().canvas;
+        let avail = ui.available_rect_before_wrap();
+        let rect = fit_rect(avail.shrink(8.0), (canvas.width, canvas.height));
+        let response = ui.allocate_rect(avail, egui::Sense::click_and_drag());
+        let painter = ui.painter_at(avail);
+        match texture {
+            Some(id) => {
+                painter.image(
+                    id,
+                    rect,
+                    egui::Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+            }
+            None => {
+                painter.rect_filled(rect, 0.0, Color32::BLACK);
+                let msg = self
+                    .viewer
+                    .as_ref()
+                    .and_then(|v| v.last_error.clone())
+                    .unwrap_or_else(|| "Renderer unavailable".into());
+                painter.text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    msg,
+                    egui::FontId::default(),
+                    Color32::LIGHT_RED,
+                );
+            }
+        }
+        painter.rect_stroke(
+            rect,
+            0.0,
+            Stroke::new(1.0, Color32::from_gray(80)),
+            egui::StrokeKind::Outside,
+        );
+
+        // Outlines for every surface; handles for the selected one.
+        let project = self.session.project();
+        for s in &project.surfaces {
+            let pts: Vec<Pos2> = s
+                .shape
+                .corners()
+                .iter()
+                .map(|c| to_screen(rect, *c))
+                .collect();
+            let selected = self.selected == Some(s.id);
+            let colour = if selected {
+                Color32::from_rgb(255, 200, 40)
+            } else {
+                Color32::from_white_alpha(90)
+            };
+            painter.add(egui::Shape::closed_line(
+                pts.clone(),
+                Stroke::new(if selected { 1.5 } else { 1.0 }, colour),
+            ));
+            if selected {
+                for (i, p) in pts.iter().enumerate() {
+                    painter.circle(
+                        *p,
+                        5.0,
+                        Color32::from_black_alpha(160),
+                        Stroke::new(1.5, colour),
+                    );
+                    painter.text(
+                        *p + egui::vec2(8.0, -8.0),
+                        egui::Align2::LEFT_BOTTOM,
+                        i.to_string(),
+                        egui::FontId::monospace(10.0),
+                        colour,
+                    );
+                }
+            }
+        }
+
+        if response.drag_started()
+            && let Some(pos) = response.interact_pointer_pos()
+        {
+            self.drag = begin_drag(project, rect, self.selected, pos);
+            if let Some(d) = &self.drag {
+                self.selected = Some(d.surface);
+            }
+        }
+        if response.clicked()
+            && let Some(pos) = response.interact_pointer_pos()
+        {
+            self.selected = begin_drag(project, rect, self.selected, pos).map(|d| d.surface);
+        }
+        if let (Some(drag), Some(pos)) = (self.drag, response.interact_pointer_pos())
+            && response.dragged()
+            && let Some(current) = project.surface(drag.surface).map(|s| s.shape)
+            && let Some(shape) = dragged_shape(rect, &current, &drag, pos)
+            && shape != current
+        {
+            self.queue_coalescing(
+                Command::SetSurfaceShape {
+                    id: drag.surface,
+                    shape,
+                },
+                format!("shape:{}", drag.surface),
+            );
+        }
+        if response.drag_stopped() {
+            self.drag = None;
+            self.end_coalescing = true;
+        }
+    }
+
+    /// Opens a borderless fullscreen window for every enabled output whose
+    /// display is connected. A window closed by the OS disables its output.
+    fn output_windows(&mut self, ctx: &egui::Context) {
+        let Some(texture) = self
+            .viewer
+            .as_ref()
+            .and_then(|v| v.last_error.is_none().then_some(()))
+            .and(self.preview_id())
+        else {
+            return;
+        };
+        let outputs = self.session.project().outputs.clone();
+        for o in outputs.iter().filter(|o| o.enabled) {
+            let Some(display) = o
+                .display
+                .as_ref()
+                .and_then(|t| om_output::resolve(t, &self.displays))
+            else {
+                continue;
+            };
+            let builder = egui::ViewportBuilder::default()
+                .with_title(format!("OpenMapper — {}", o.name))
+                .with_monitor(display.index as usize)
+                .with_decorations(false);
+            let id = egui::ViewportId::from_hash_of(("output", o.id));
+            let close = ctx.show_viewport_immediate(id, builder, |ui, _class| {
+                let rect = ui.max_rect();
+                ui.painter().image(
+                    texture,
+                    rect,
+                    egui::Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+                ui.input(|i| i.viewport().close_requested() || i.key_pressed(egui::Key::Escape))
+            });
+            if close {
+                self.queue(Command::UpdateOutput {
+                    id: o.id,
+                    name: None,
+                    enabled: Some(false),
+                });
+            }
+        }
+    }
+
+    fn preview_id(&self) -> Option<egui::TextureId> {
+        self.viewer.as_ref().and_then(|v| v.preview_id())
     }
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
@@ -302,6 +812,8 @@ impl OpenMapperApp {
             ui.label(format!("{file}{dirty}"));
             ui.separator();
             ui.label(format!("rev {}", p.revision));
+            ui.separator();
+            ui.label(format!("{}×{}", p.canvas.width, p.canvas.height));
             if let Some(err) = self.session.journal_error() {
                 ui.separator();
                 ui.colored_label(ui.visuals().warn_fg_color, format!("journal: {err}"));
@@ -338,19 +850,21 @@ fn open_message(path: &std::path::Path, report: &OpenReport) -> String {
 
 impl eframe::App for OpenMapperApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.handle_shortcuts(&ui.ctx().clone());
+        let ctx = ui.ctx().clone();
+        self.poll();
+        self.handle_shortcuts(&ctx);
         egui::Panel::top("menu").show(ui, |ui| self.top_bar(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
-        egui::Panel::left("surfaces")
-            .default_size(220.0)
-            .show(ui, |ui| self.surface_list(ui));
+        egui::Panel::left("project")
+            .default_size(260.0)
+            .show(ui, |ui| self.left_panel(ui));
         egui::Panel::right("inspector")
             .default_size(260.0)
             .show(ui, |ui| self.inspector(ui));
-        egui::CentralPanel::default().show(ui, |ui| {
-            ui.centered_and_justified(|ui| {
-                ui.weak("Mapping canvas arrives with the renderer milestone.");
-            });
-        });
+        egui::CentralPanel::default().show(ui, |ui| self.canvas_view(ui));
+        self.output_windows(&ctx);
+        self.apply_pending();
+        // Keep polling displays/media even when idle.
+        ctx.request_repaint_after(POLL_INTERVAL);
     }
 }

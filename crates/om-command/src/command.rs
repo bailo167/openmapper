@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use om_project::{Project, Surface};
-use om_types::{SurfaceId, UnitInterval};
+use om_project::{Canvas, DisplayTarget, Media, Output, Project, Shape, Surface};
+use om_types::{MediaId, OutputId, SurfaceId, UnitInterval};
 use serde::{Deserialize, Serialize};
 
 /// A validated, serialisable project mutation.
@@ -37,6 +37,48 @@ pub enum Command {
         id: SurfaceId,
         to_index: usize,
     },
+    /// Replaces a surface's geometry (corners and UVs).
+    SetSurfaceShape {
+        id: SurfaceId,
+        shape: Shape,
+    },
+    /// Assigns (`Some`) or clears (`None`) a surface's media.
+    SetSurfaceMedia {
+        id: SurfaceId,
+        media: Option<MediaId>,
+    },
+    AddMedia {
+        media: Media,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        index: Option<usize>,
+    },
+    /// Removes a media item. Rejected while any surface uses it.
+    RemoveMedia {
+        id: MediaId,
+    },
+    SetCanvas {
+        canvas: Canvas,
+    },
+    AddOutput {
+        output: Output,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        index: Option<usize>,
+    },
+    RemoveOutput {
+        id: OutputId,
+    },
+    UpdateOutput {
+        id: OutputId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enabled: Option<bool>,
+    },
+    /// Sets (`Some`) or clears (`None`) the output's preferred display.
+    SetOutputDisplay {
+        id: OutputId,
+        display: Option<DisplayTarget>,
+    },
     /// Sets (`Some`) or removes (`None`) a project-level extension payload.
     SetExtension {
         key: String,
@@ -53,6 +95,12 @@ pub enum Event {
     SurfaceRemoved { id: SurfaceId },
     SurfaceChanged { id: SurfaceId },
     SurfacesReordered,
+    MediaAdded { id: MediaId },
+    MediaRemoved { id: MediaId },
+    CanvasChanged,
+    OutputAdded { id: OutputId },
+    OutputRemoved { id: OutputId },
+    OutputChanged { id: OutputId },
     ExtensionChanged { key: String },
 }
 
@@ -69,6 +117,16 @@ pub enum CommandError {
     IndexOutOfRange { index: usize, max: usize },
     #[error("extension key must be non-empty")]
     EmptyExtensionKey,
+    #[error("media {0} does not exist")]
+    UnknownMedia(MediaId),
+    #[error("media {0} already exists")]
+    DuplicateMedia(MediaId),
+    #[error("media {media} is still used by surface {surface}")]
+    MediaInUse { media: MediaId, surface: SurfaceId },
+    #[error("output {0} does not exist")]
+    UnknownOutput(OutputId),
+    #[error("output {0} already exists")]
+    DuplicateOutput(OutputId),
     #[error("command would make the project invalid: {0}")]
     Invalid(String),
 }
@@ -87,6 +145,32 @@ fn check_name(name: &str) -> Result<(), CommandError> {
     } else {
         Ok(())
     }
+}
+
+fn insert_at<T>(items: &mut Vec<T>, item: T, index: Option<usize>) -> Result<(), CommandError> {
+    let max = items.len();
+    let at = index.unwrap_or(max);
+    if at > max {
+        return Err(CommandError::IndexOutOfRange { index: at, max });
+    }
+    items.insert(at, item);
+    Ok(())
+}
+
+fn media_index(project: &Project, id: MediaId) -> Result<usize, CommandError> {
+    project
+        .media
+        .iter()
+        .position(|m| m.id == id)
+        .ok_or(CommandError::UnknownMedia(id))
+}
+
+fn output_index(project: &Project, id: OutputId) -> Result<usize, CommandError> {
+    project
+        .outputs
+        .iter()
+        .position(|o| o.id == id)
+        .ok_or(CommandError::UnknownOutput(id))
 }
 
 fn surface_index(project: &Project, id: SurfaceId) -> Result<usize, CommandError> {
@@ -115,12 +199,10 @@ impl Command {
                 if project.surface(surface.id).is_some() {
                     return Err(CommandError::DuplicateSurface(surface.id));
                 }
-                let max = project.surfaces.len();
-                let at = index.unwrap_or(max);
-                if at > max {
-                    return Err(CommandError::IndexOutOfRange { index: at, max });
+                if let Some(m) = surface.media {
+                    media_index(project, m)?;
                 }
-                project.surfaces.insert(at, surface.clone());
+                insert_at(&mut project.surfaces, surface.clone(), *index)?;
                 Ok(Applied {
                     inverse: Self::RemoveSurface { id: surface.id },
                     events: vec![Event::SurfaceAdded { id: surface.id }],
@@ -187,6 +269,132 @@ impl Command {
                     events: vec![Event::SurfacesReordered],
                 })
             }
+            Self::SetSurfaceShape { id, shape } => {
+                let at = surface_index(project, *id)?;
+                let old = std::mem::replace(&mut project.surfaces[at].shape, *shape);
+                Ok(Applied {
+                    inverse: Self::SetSurfaceShape {
+                        id: *id,
+                        shape: old,
+                    },
+                    events: vec![Event::SurfaceChanged { id: *id }],
+                })
+            }
+            Self::SetSurfaceMedia { id, media } => {
+                let at = surface_index(project, *id)?;
+                if let Some(m) = media {
+                    media_index(project, *m)?;
+                }
+                let old = std::mem::replace(&mut project.surfaces[at].media, *media);
+                Ok(Applied {
+                    inverse: Self::SetSurfaceMedia {
+                        id: *id,
+                        media: old,
+                    },
+                    events: vec![Event::SurfaceChanged { id: *id }],
+                })
+            }
+            Self::AddMedia { media, index } => {
+                check_name(&media.name)?;
+                if project.media_item(media.id).is_some() {
+                    return Err(CommandError::DuplicateMedia(media.id));
+                }
+                insert_at(&mut project.media, media.clone(), *index)?;
+                Ok(Applied {
+                    inverse: Self::RemoveMedia { id: media.id },
+                    events: vec![Event::MediaAdded { id: media.id }],
+                })
+            }
+            Self::RemoveMedia { id } => {
+                let at = media_index(project, *id)?;
+                if let Some(s) = project.surfaces.iter().find(|s| s.media == Some(*id)) {
+                    return Err(CommandError::MediaInUse {
+                        media: *id,
+                        surface: s.id,
+                    });
+                }
+                let media = project.media.remove(at);
+                Ok(Applied {
+                    inverse: Self::AddMedia {
+                        media,
+                        index: Some(at),
+                    },
+                    events: vec![Event::MediaRemoved { id: *id }],
+                })
+            }
+            Self::SetCanvas { canvas } => {
+                let max = Canvas::MAX_DIMENSION;
+                if canvas.width == 0
+                    || canvas.height == 0
+                    || canvas.width > max
+                    || canvas.height > max
+                {
+                    return Err(CommandError::Invalid(format!(
+                        "canvas {}x{} is outside 1..={max}",
+                        canvas.width, canvas.height
+                    )));
+                }
+                let old = std::mem::replace(&mut project.canvas, *canvas);
+                Ok(Applied {
+                    inverse: Self::SetCanvas { canvas: old },
+                    events: vec![Event::CanvasChanged],
+                })
+            }
+            Self::AddOutput { output, index } => {
+                check_name(&output.name)?;
+                if project.output(output.id).is_some() {
+                    return Err(CommandError::DuplicateOutput(output.id));
+                }
+                insert_at(&mut project.outputs, output.clone(), *index)?;
+                Ok(Applied {
+                    inverse: Self::RemoveOutput { id: output.id },
+                    events: vec![Event::OutputAdded { id: output.id }],
+                })
+            }
+            Self::RemoveOutput { id } => {
+                let at = output_index(project, *id)?;
+                let output = project.outputs.remove(at);
+                Ok(Applied {
+                    inverse: Self::AddOutput {
+                        output,
+                        index: Some(at),
+                    },
+                    events: vec![Event::OutputRemoved { id: *id }],
+                })
+            }
+            Self::UpdateOutput { id, name, enabled } => {
+                if let Some(n) = name {
+                    check_name(n)?;
+                }
+                let at = output_index(project, *id)?;
+                let o = &mut project.outputs[at];
+                let inverse = Self::UpdateOutput {
+                    id: *id,
+                    name: name.as_ref().map(|_| o.name.clone()),
+                    enabled: enabled.map(|_| o.enabled),
+                };
+                if let Some(n) = name {
+                    o.name.clone_from(n);
+                }
+                if let Some(e) = enabled {
+                    o.enabled = *e;
+                }
+                Ok(Applied {
+                    inverse,
+                    events: vec![Event::OutputChanged { id: *id }],
+                })
+            }
+            Self::SetOutputDisplay { id, display } => {
+                let at = output_index(project, *id)?;
+                let old = std::mem::replace(&mut project.outputs[at].display, display.clone());
+                Ok(Applied {
+                    inverse: Self::SetOutputDisplay {
+                        id: *id,
+                        display: old,
+                    },
+                    events: vec![Event::OutputChanged { id: *id }],
+                })
+            }
             Self::SetExtension { key, value } => {
                 if key.is_empty() {
                     return Err(CommandError::EmptyExtensionKey);
@@ -215,6 +423,15 @@ impl Command {
             Self::RemoveSurface { .. } => "Remove Surface",
             Self::UpdateSurface { .. } => "Edit Surface",
             Self::MoveSurface { .. } => "Reorder Surfaces",
+            Self::SetSurfaceShape { .. } => "Edit Shape",
+            Self::SetSurfaceMedia { .. } => "Assign Media",
+            Self::AddMedia { .. } => "Add Media",
+            Self::RemoveMedia { .. } => "Remove Media",
+            Self::SetCanvas { .. } => "Canvas Size",
+            Self::AddOutput { .. } => "Add Output",
+            Self::RemoveOutput { .. } => "Remove Output",
+            Self::UpdateOutput { .. } => "Edit Output",
+            Self::SetOutputDisplay { .. } => "Assign Display",
             Self::SetExtension { .. } => "Edit Extension",
         }
     }

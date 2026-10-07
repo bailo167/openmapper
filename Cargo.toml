@@ -3,8 +3,13 @@ resolver = "3"
 members = [
     "crates/om-types",
     "crates/om-time",
+    "crates/om-geom",
     "crates/om-project",
     "crates/om-command",
+    "crates/om-media-core",
+    "crates/om-gpu",
+    "crates/om-render",
+    "crates/om-output",
     "crates/om-engine",
     "crates/om-ui-egui",
     "apps/openmapper",
@@ -23,8 +28,13 @@ publish = false
 [workspace.dependencies]
 om-types = { path = "crates/om-types" }
 om-time = { path = "crates/om-time" }
+om-geom = { path = "crates/om-geom" }
 om-project = { path = "crates/om-project" }
 om-command = { path = "crates/om-command" }
+om-media-core = { path = "crates/om-media-core" }
+om-gpu = { path = "crates/om-gpu" }
+om-render = { path = "crates/om-render" }
+om-output = { path = "crates/om-output" }
 om-engine = { path = "crates/om-engine" }
 om-ui-egui = { path = "crates/om-ui-egui" }
 
@@ -36,8 +46,17 @@ clap = { version = "4.6.7", features = ["derive"] }
 anyhow = "1.0.104"
 tempfile = "3.27.0"
 proptest = "1.11.0"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
+glam = { version = "0.34.1", features = ["serde"] }
 # GUI/GPU stack: pinned exactly, upgraded only in dedicated PRs (docs/PLAN.md).
 egui = "=0.36.2"
+egui-wgpu = "=0.36.2"
+# Must equal the version egui-wgpu uses so the UI and renderer share a device (D-006).
+wgpu = "=30.0.1"
+pollster = "1.0.1"
+bytemuck = { version = "1.25.2", features = ["derive"] }
+half = "2.7.1"
+display-info = "0.5.9"
 eframe = { version = "=0.36.2", default-features = false, features = ["wgpu", "default_fonts", "accesskit", "wayland", "x11"] }
 
 [workspace.lints.rust]

@@ -1,0 +1,16 @@
+[package]
+name = "om-output"
+description = "OpenMapper output routing: display enumeration and output-to-display resolution"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+om-project.workspace = true
+display-info.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

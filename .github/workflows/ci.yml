@@ -19,13 +19,16 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
+  # GPU render goldens must run in CI (software adapters: lavapipe on Linux,
+  # WARP on Windows, the runner's Metal device on macOS).
+  OM_REQUIRE_GPU: "1"
 
 jobs:
   gate-a:
     name: gate A (linux, full xtask ci)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -34,7 +37,7 @@ jobs:
         with:
           tool: cargo-deny
       - name: system libraries for eframe
-        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev libxcb1-dev libxcb-randr0-dev mesa-vulkan-drivers
       - run: cargo xtask ci
 
   gate-b:
@@ -47,7 +50,7 @@ jobs:
         os: [macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy

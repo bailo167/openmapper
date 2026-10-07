@@ -7,6 +7,12 @@ all-features = false
 [advisories]
 version = 2
 yanked = "deny"
+ignore = [
+    # Unmaintained (not vulnerable) non-cryptographic hash used by display-info
+    # on Windows for display enumeration only. Revisit at the Cross-platform
+    # milestone; replace display-info if upstream does not drop it. (D-008)
+    { id = "RUSTSEC-2025-0057", reason = "unmaintained notice only; Windows display enumeration via display-info" },
+]
 
 [licenses]
 version = 2

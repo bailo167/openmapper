@@ -1,0 +1,36 @@
+# Parity rows for milestone 2. Status ladder: docs/PLAN.md.
+- feature: surface.quad.perspective
+  priority: P0
+  status: cross-platform-pending
+  source: [public-doc]
+  tests: [identity_quad_reproduces_source, perspective_quad_matches_reference, geometry_edges_within_one_pixel]
+  platforms: { macos: pass, windows: pending-ci, linux: pending-ci }
+  known_differences: []
+- feature: surface.triangle
+  priority: P0
+  status: cross-platform-pending
+  source: [public-doc]
+  tests: [mirrored_cropped_quad_and_triangle_match_reference]
+  platforms: { macos: pass, windows: pending-ci, linux: pending-ci }
+  known_differences: []
+- feature: surface.uv-region
+  priority: P0
+  status: cross-platform-pending
+  source: [public-doc]
+  tests: [mirrored_cropped_quad_and_triangle_match_reference]
+  platforms: { macos: pass, windows: pending-ci, linux: pending-ci }
+  known_differences: []
+- feature: surface.opacity-and-order
+  priority: P0
+  status: cross-platform-pending
+  source: [public-doc]
+  tests: [opacity_and_stacking_order]
+  platforms: { macos: pass, windows: pending-ci, linux: pending-ci }
+  known_differences: []
+- feature: output.fullscreen-display
+  priority: P0
+  status: implemented-unverified
+  source: [public-doc]
+  tests: []
+  notes: Needs the physical projector test (enumeration, fullscreen, hot-plug, sleep/wake, 30-min run).
+  known_differences: []

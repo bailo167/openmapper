@@ -6,7 +6,11 @@
 //! through a session so persistence and recovery behave identically
 //! everywhere.
 
+mod media;
+
 use std::path::{Path, PathBuf};
+
+pub use media::{MediaChanges, MediaLibrary, path_for_storage, resolve_media_path};
 
 use om_command::{Command, CommandError, CommandResult, Document, HistoryError};
 use om_project::Project;
@@ -169,6 +173,13 @@ impl Session {
     #[must_use]
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
+    }
+
+    /// Directory relative media paths resolve against (the project file's
+    /// directory), if the project has been saved.
+    #[must_use]
+    pub fn project_dir(&self) -> Option<&Path> {
+        self.path.as_deref().and_then(Path::parent)
     }
 
     /// True if there are changes since the last save (or it was never saved).

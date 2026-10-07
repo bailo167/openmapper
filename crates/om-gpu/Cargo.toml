@@ -1,0 +1,16 @@
+[package]
+name = "om-gpu"
+description = "OpenMapper GPU device and capability management (wgpu)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+wgpu.workspace = true
+pollster.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

@@ -1,6 +1,6 @@
 [package]
-name = "om-command"
-description = "OpenMapper typed command bus: validated mutations, events, undo/redo"
+name = "om-render"
+description = "OpenMapper renderer: linear-light compositor, projective surface mapping, display output"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,14 +9,16 @@ publish.workspace = true
 
 [dependencies]
 om-types.workspace = true
+om-geom.workspace = true
 om-project.workspace = true
-serde.workspace = true
-serde_json.workspace = true
+om-media-core.workspace = true
+om-gpu.workspace = true
+wgpu.workspace = true
+bytemuck.workspace = true
+half.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-om-geom.workspace = true
-proptest.workspace = true
 
 [lints]
 workspace = true
