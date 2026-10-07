@@ -145,3 +145,18 @@ fine mesh closely follows the original perspective. The inverse uses the
 numerically stable quadratic form; the naive form dropped pixels on
 near-parallelogram cells. Blend modes are fixed-function on premultiplied
 linear colour; Multiply is exact over opaque backgrounds.
+
+## D-018 — ISF implementation strategy (2026-10-07)
+
+ISF GLSL is translated to GLSL 4.50 by explicit rewriting (not preprocessor
+tricks): ISF image macros become generated per-image functions, `gl_FragColor`
+/ `gl_FragCoord` map to variables with GL's bottom-left origin preserved,
+inputs become a std140 uniform block (bools as ints). naga parses and
+validates before anything reaches the GPU, so errors are reported with the
+user's line numbers. naga 30.0.1 needs `wgsl-in` enabled alongside `glsl-in`
+(upstream cfg bug). ISF shaders operate on sRGB straight-alpha colour,
+converted around them. Each use (media item or effect slot) owns its program
+state (persistent buffers, frame index). Shader files are watched and
+recompiled live. The CPU reference treats ISF as identity; ISF is verified
+against analytic expectations instead. `om-effects` remains unused: effects
+live in `om-render` alongside the compositor (no separate crate needed yet).

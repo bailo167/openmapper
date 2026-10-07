@@ -13,6 +13,7 @@ om-project.workspace = true
 om-command.workspace = true
 om-media-core.workspace = true
 om-audio.workspace = true
+om-isf.workspace = true
 om-time.workspace = true
 thiserror.workspace = true
 

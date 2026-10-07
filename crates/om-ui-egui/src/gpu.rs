@@ -121,7 +121,11 @@ impl Viewer {
         }
         let changes = self.media.update(project, project_dir, show);
         self.apply_media(&changes);
-        match self.render(project) {
+        let inputs = om_render::FrameInputs {
+            show_seconds: show.as_seconds_f64(),
+            media_seconds: changes.shader_times.iter().copied().collect(),
+        };
+        match self.render(project, &inputs) {
             Ok(id) => {
                 self.last_error = None;
                 Some(id)
@@ -144,6 +148,20 @@ impl Viewer {
             }
             self.update_thumbnail(*id, img);
         }
+        for path in &changes.shaders_removed {
+            self.compositor.remove_shader(path);
+        }
+        for (path, compiled) in &changes.shaders {
+            self.compositor.set_shader(path, compiled);
+        }
+    }
+
+    /// Shader compile/pipeline error for a stored shader path.
+    pub fn shader_error(&self, path: &str) -> Option<String> {
+        self.media
+            .shader_error(path)
+            .or_else(|| self.compositor.shader_error(path))
+            .map(str::to_owned)
     }
 
     /// Live thumbnail, refreshed at most twice a second.
@@ -183,8 +201,15 @@ impl Viewer {
         self.thumbs.get(&id).map(|(h, _)| h)
     }
 
-    fn render(&mut self, project: &Project) -> Result<egui::TextureId, String> {
-        let report = self.compositor.render(project).map_err(|e| e.to_string())?;
+    fn render(
+        &mut self,
+        project: &Project,
+        inputs: &om_render::FrameInputs,
+    ) -> Result<egui::TextureId, String> {
+        let report = self
+            .compositor
+            .render_with(project, inputs)
+            .map_err(|e| e.to_string())?;
         let size = report.canvas;
         self.last_frame = Some(report);
         self.ensure_preview(size);

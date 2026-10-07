@@ -708,3 +708,93 @@ fn disabled_effects_are_skipped_and_targets_released() {
     fx_.gpu_render(&mut c, &pr_disabled);
     assert_eq!(c.resource_counts().effect_targets, 0);
 }
+
+fn corpus_shader(name: &str) -> (String, om_isf::Compiled) {
+    let path = format!(
+        "{}/../om-isf/tests/corpus/{name}",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let src = std::fs::read_to_string(&path).unwrap();
+    (
+        path,
+        om_isf::compile(&om_isf::parse(&src).unwrap()).unwrap(),
+    )
+}
+
+#[test]
+fn shader_generator_media_renders() {
+    let Some(g) = gpu() else { return };
+    let mut c = Compositor::new(g);
+    let (path, compiled) = corpus_shader("solid.fs");
+    let shader_id = MediaId::from_u128(200);
+    let mut pr = project(16, 16, vec![]);
+    let mut inputs = std::collections::BTreeMap::new();
+    let f = |v: f64| om_types::Finite::new(v).unwrap();
+    inputs.insert(
+        "tint".to_owned(),
+        om_project::ShaderValue::Vector(vec![f(1.0), f(0.5), f(0.0), f(1.0)]),
+    );
+    pr.media.push(Media {
+        id: shader_id,
+        name: "solid".into(),
+        source: MediaSource::Shader {
+            path: path.clone(),
+            inputs,
+        },
+        playback: Default::default(),
+        extensions: Default::default(),
+    });
+    pr.surfaces.push(surface(1, Shape::full_quad(), shader_id));
+    // Not loaded yet: surface reports it, nothing crashes.
+    let report = c.render(&pr).unwrap();
+    assert!(matches!(
+        report.plan.skipped[..],
+        [(_, SkipReason::MediaNotLoaded(_))]
+    ));
+    c.set_shader(&path, &compiled);
+    c.render(&pr).unwrap();
+    let px = c.read_rgba8().unwrap();
+    // ISF output is sRGB-encoded: 0.5 is code 127.5, so 127 or 128 after the
+    // half-float round trip.
+    assert_eq!((px[0], px[2]), (255, 0), "{:?}", &px[..4]);
+    assert!(px[1].abs_diff(128) <= 1, "{:?}", &px[..4]);
+}
+
+#[test]
+fn shader_effect_filters_the_chain() {
+    let Some(g) = gpu() else { return };
+    let mut c = Compositor::new(g);
+    let fx_ = Fixture::new((32, 24));
+    let (path, compiled) = corpus_shader("passthrough.fs");
+    let plain = fx_.gpu_render(
+        &mut c,
+        &project(32, 24, vec![surface(1, Shape::full_quad(), GRID)]),
+    );
+    let shader_effect = |swap: bool| om_project::Effect {
+        enabled: true,
+        kind: om_project::EffectKind::Shader {
+            path: path.clone(),
+            inputs: std::collections::BTreeMap::from([(
+                "swap".to_owned(),
+                om_project::ShaderValue::Bool(swap),
+            )]),
+        },
+    };
+    let mut s = surface(1, Shape::full_quad(), GRID);
+    s.effects = vec![shader_effect(false)];
+    let pr = project(32, 24, vec![s.clone()]);
+    // Shader not loaded: the effect is skipped (identity).
+    assert_eq!(fx_.gpu_render(&mut c, &pr), plain);
+    c.set_shader(&path, &compiled);
+    let out = fx_.gpu_render(&mut c, &pr);
+    let d = diff(&out, &plain, |_| true);
+    assert!(d.max <= 1, "passthrough ISF ~ identity: {d:?}");
+    s.effects = vec![shader_effect(true)];
+    let out = fx_.gpu_render(&mut c, &project(32, 24, vec![s]));
+    for (a, b) in out.as_chunks::<4>().0.iter().zip(plain.as_chunks::<4>().0) {
+        assert!(
+            a[0].abs_diff(b[2]) <= 1 && a[2].abs_diff(b[0]) <= 1,
+            "swap: {a:?} vs {b:?}"
+        );
+    }
+}

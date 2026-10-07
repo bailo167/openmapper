@@ -69,6 +69,11 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         index: Option<usize>,
     },
+    /// Replaces a media item's source (relink a file, edit shader inputs).
+    SetMediaSource {
+        id: MediaId,
+        source: om_project::MediaSource,
+    },
     /// Changes how a time-based media item plays.
     SetMediaPlayback {
         id: MediaId,
@@ -371,6 +376,20 @@ impl Command {
                     events: vec![Event::MediaAdded { id: media.id }],
                 })
             }
+            Self::SetMediaSource { id, source } => {
+                if source.path().is_some_and(|p| p.trim().is_empty()) {
+                    return Err(CommandError::Invalid("media path is empty".into()));
+                }
+                let at = media_index(project, *id)?;
+                let old = std::mem::replace(&mut project.media[at].source, source.clone());
+                Ok(Applied {
+                    inverse: Self::SetMediaSource {
+                        id: *id,
+                        source: old,
+                    },
+                    events: vec![Event::MediaChanged { id: *id }],
+                })
+            }
             Self::SetMediaPlayback { id, playback } => {
                 let at = media_index(project, *id)?;
                 let old = std::mem::replace(&mut project.media[at].playback, *playback);
@@ -507,6 +526,7 @@ impl Command {
             Self::SetSurfaceMedia { .. } => "Assign Media",
             Self::AddMedia { .. } => "Add Media",
             Self::SetMediaPlayback { .. } => "Playback Settings",
+            Self::SetMediaSource { .. } => "Media Source",
             Self::RemoveMedia { .. } => "Remove Media",
             Self::SetCanvas { .. } => "Canvas Size",
             Self::AddOutput { .. } => "Add Output",

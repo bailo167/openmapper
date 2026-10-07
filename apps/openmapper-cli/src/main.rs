@@ -207,10 +207,16 @@ fn load_media(
     media: &mut MediaRuntime,
     t: RationalTime,
     warn: bool,
-) {
+) -> om_render::FrameInputs {
     let changes = media.update_blocking(project, dir, t, Duration::from_secs(10));
     for id in &changes.unload {
         compositor.remove_image(*id);
+    }
+    for path in &changes.shaders_removed {
+        compositor.remove_shader(path);
+    }
+    for (path, compiled) in &changes.shaders {
+        compositor.set_shader(path, compiled);
     }
     for (id, img) in &changes.upload {
         if let Err(e) = compositor.set_image(*id, img) {
@@ -224,12 +230,25 @@ fn load_media(
             }
         }
     }
+    if warn {
+        for m in &project.media {
+            if let om_project::MediaSource::Shader { path, .. } = &m.source
+                && let Some(e) = media.shader_error(path)
+            {
+                eprintln!("warning: shader {path}: {e}");
+            }
+        }
+    }
+    om_render::FrameInputs {
+        show_seconds: t.as_seconds_f64(),
+        media_seconds: changes.shader_times.iter().copied().collect(),
+    }
 }
 
 fn render(path: &Path, out: &Path, at: f64) -> Result<(), String> {
     let (project, mut compositor, mut media) = prepare(path)?;
     let t = seconds(at)?;
-    load_media(
+    let inputs = load_media(
         &project,
         path.parent(),
         &mut compositor,
@@ -237,7 +256,9 @@ fn render(path: &Path, out: &Path, at: f64) -> Result<(), String> {
         t,
         true,
     );
-    let report = compositor.render(&project).map_err(|e| e.to_string())?;
+    let report = compositor
+        .render_with(&project, &inputs)
+        .map_err(|e| e.to_string())?;
     for (id, reason) in &report.plan.skipped {
         eprintln!("note: surface {id} not drawn: {reason}");
     }
@@ -269,7 +290,7 @@ fn soak(path: &Path, seconds: u64) -> Result<(), String> {
     let start = Instant::now();
     while Instant::now() < deadline {
         let t = RationalTime::from_nanos(start.elapsed().as_nanos());
-        load_media(
+        let inputs = load_media(
             &project,
             path.parent(),
             &mut compositor,
@@ -277,7 +298,9 @@ fn soak(path: &Path, seconds: u64) -> Result<(), String> {
             t,
             frames == 0,
         );
-        compositor.render(&project).map_err(|e| e.to_string())?;
+        compositor
+            .render_with(&project, &inputs)
+            .map_err(|e| e.to_string())?;
         // Read back periodically to force GPU completion and exercise that path.
         if frames.is_multiple_of(60) {
             compositor.read_rgba8().map_err(|e| e.to_string())?;

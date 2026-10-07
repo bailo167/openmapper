@@ -16,11 +16,12 @@ mod colour;
 pub mod compare;
 mod compositor;
 pub mod effects;
+pub mod isf;
 mod plan;
 pub mod reference;
 
 pub use colour::{linear_to_srgb, linear_to_srgb8, srgb_to_linear};
-pub use compositor::{Compositor, FrameReport, RenderError, ResourceCounts};
+pub use compositor::{Compositor, FrameInputs, FrameReport, RenderError, ResourceCounts};
 pub use plan::{
     Clip, DrawItem, MAX_MASK_VERTICES, Mapping, MaskShape, RenderPlan, SkipReason, plan,
 };

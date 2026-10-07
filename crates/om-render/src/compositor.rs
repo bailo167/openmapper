@@ -91,7 +91,34 @@ struct GpuImage {
 }
 
 /// Per-surface effect targets: two ping-pong textures at media size.
+/// Who uses a shader program (each use keeps its own state).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum ShaderUse {
+    Media(MediaId),
+    /// Effect slot `usize` in a surface's chain.
+    Effect(om_types::SurfaceId, usize),
+}
+
+/// sRGB working textures around an ISF program.
+struct IsfTemps {
+    size: (u32, u32),
+    _textures: [wgpu::Texture; 2],
+    in_view: wgpu::TextureView,
+    out_view: wgpu::TextureView,
+    out_load: wgpu::BindGroup,
+}
+
+/// Per-frame times for time-dependent sources.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FrameInputs {
+    /// Show time in seconds (effect shaders).
+    pub show_seconds: f64,
+    /// Each shader generator's own time in seconds (restart, speed).
+    pub media_seconds: HashMap<MediaId, f64>,
+}
+
 struct SurfaceFx {
+    isf: Option<IsfTemps>,
     size: (u32, u32),
     _textures: [wgpu::Texture; 2],
     views: [wgpu::TextureView; 2],
@@ -136,6 +163,12 @@ pub struct Compositor {
     fx_layout: wgpu::BindGroupLayout,
     fx_pipelines: HashMap<&'static str, wgpu::RenderPipeline>,
     fx: HashMap<om_types::SurfaceId, SurfaceFx>,
+    shader_sources: HashMap<String, om_isf::Compiled>,
+    shader_instances: HashMap<ShaderUse, (String, crate::isf::IsfProgram)>,
+    shader_errors: HashMap<String, String>,
+    shader_media_tmp: HashMap<MediaId, IsfTemps>,
+    /// Uniform bound to effect passes that need none.
+    dummy_fx: (wgpu::Buffer, wgpu::BindGroup),
 }
 
 impl std::fmt::Debug for Compositor {
@@ -274,6 +307,8 @@ impl Compositor {
             "fs_blur_h",
             "fs_blur_v",
             "fs_pixelate",
+            "fs_to_isf",
+            "fs_from_isf",
         ]
         .into_iter()
         .map(|entry| {
@@ -305,6 +340,21 @@ impl Compositor {
             (entry, p)
         })
         .collect();
+        let dummy_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("om dummy effect uniform"),
+            size: FX_UNIFORM_SIZE,
+            usage: wgpu::BufferUsages::UNIFORM,
+            mapped_at_creation: false,
+        });
+        let dummy_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("om dummy effect uniform"),
+            layout: &fx_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: dummy_buffer.as_entire_binding(),
+            }],
+        });
+        let dummy_fx = (dummy_buffer, dummy_bind);
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("om composite"),
             bind_group_layouts: &[Some(&item_layout), Some(&media_layout), Some(&mask_layout)],
@@ -395,6 +445,11 @@ impl Compositor {
             fx_layout,
             fx_pipelines,
             fx: HashMap::new(),
+            shader_sources: HashMap::new(),
+            shader_instances: HashMap::new(),
+            shader_errors: HashMap::new(),
+            shader_media_tmp: HashMap::new(),
+            dummy_fx,
         }
     }
 
@@ -487,6 +542,15 @@ impl Compositor {
 
     /// Renders `project` into the working canvas.
     pub fn render(&mut self, project: &Project) -> Result<FrameReport, RenderError> {
+        self.render_with(project, &FrameInputs::default())
+    }
+
+    /// Renders with explicit times for shader media and effect shaders.
+    pub fn render_with(
+        &mut self,
+        project: &Project,
+        inputs: &FrameInputs,
+    ) -> Result<FrameReport, RenderError> {
         if self.gpu.is_lost() {
             return Err(RenderError::DeviceLost);
         }
@@ -504,6 +568,14 @@ impl Compositor {
             });
         }
         self.ensure_canvas(size);
+        let mut shader_encoder =
+            self.gpu
+                .device()
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("om shader media"),
+                });
+        self.update_shader_media(project, inputs, &mut shader_encoder);
+        self.gpu.queue().submit([shader_encoder.finish()]);
         let frame_plan = plan(project, |m| self.images.contains_key(&m));
         let mut mask_encoder =
             self.gpu
@@ -512,7 +584,7 @@ impl Compositor {
                     label: Some("om masks"),
                 });
         self.update_masks(&frame_plan, size, &mut mask_encoder);
-        self.update_effects(&frame_plan, &mut mask_encoder);
+        self.update_effects(&frame_plan, &mut mask_encoder, inputs.show_seconds);
         self.gpu.queue().submit([mask_encoder.finish()]);
 
         // Geometry: triangle fans flattened into a list; one uniform per item.
@@ -774,7 +846,13 @@ impl Compositor {
     }
 
     /// Runs each surface's effect chain on its media into ping-pong targets.
-    fn update_effects(&mut self, frame_plan: &RenderPlan, encoder: &mut wgpu::CommandEncoder) {
+    fn update_effects(
+        &mut self,
+        frame_plan: &RenderPlan,
+        encoder: &mut wgpu::CommandEncoder,
+        show_seconds: f64,
+    ) {
+        use crate::effects::Pass;
         let mut wanted: Vec<(
             om_types::SurfaceId,
             MediaId,
@@ -788,6 +866,10 @@ impl Compositor {
             }
         }
         self.fx.retain(|id, _| wanted.iter().any(|(s, ..)| s == id));
+        self.shader_instances.retain(|k, _| match k {
+            ShaderUse::Effect(s, _) => wanted.iter().any(|(w, ..)| w == s),
+            ShaderUse::Media(_) => true,
+        });
         for (surface, media, effects) in wanted {
             let passes = crate::effects::passes(effects.iter());
             let Some(img_size) = self.images.get(&media).map(|i| i.size) else {
@@ -813,53 +895,282 @@ impl Compositor {
                     f.uniforms.push(u);
                 }
             }
+            if passes.iter().any(|p| matches!(p, Pass::Isf { .. }))
+                && self.fx.get(&surface).is_some_and(|f| f.isf.is_none())
+            {
+                let temps = self.create_isf_temps(img_size);
+                if let Some(f) = self.fx.get_mut(&surface) {
+                    f.isf = Some(temps);
+                }
+            }
+            for pass in &passes {
+                if let Pass::Isf { path, slot, .. } = pass {
+                    self.ensure_instance(ShaderUse::Effect(surface, *slot), path);
+                }
+            }
             let (Some(fx), Some(img)) = (self.fx.get(&surface), self.images.get(&media)) else {
                 continue;
             };
             let mut input: &wgpu::BindGroup = &img.load_bind;
             let mut target = 0usize;
+            let mut wrote = false;
             for (k, pass) in passes.iter().enumerate() {
-                let entry = match pass {
-                    crate::effects::Pass::Color { .. } => "fs_color",
-                    crate::effects::Pass::Invert => "fs_invert",
-                    crate::effects::Pass::BlurH { .. } => "fs_blur_h",
-                    crate::effects::Pass::BlurV { .. } => "fs_blur_v",
-                    crate::effects::Pass::Pixelate { .. } => "fs_pixelate",
-                };
-                let Some(pipeline) = self.fx_pipelines.get(entry) else {
-                    continue;
-                };
                 let (ubuf, ubind) = &fx.uniforms[k];
-                self.gpu.queue().write_buffer(
-                    ubuf,
-                    0,
-                    bytemuck::cast_slice(&crate::effects::uniform(pass)),
-                );
-                let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("om effect"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &fx.views[target],
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    ..Default::default()
-                });
-                rp.set_pipeline(pipeline);
-                rp.set_bind_group(0, ubind, &[]);
-                rp.set_bind_group(1, input, &[]);
-                rp.draw(0..3, 0..1);
-                drop(rp);
+                if let Pass::Isf { path, slot, inputs } = pass {
+                    let key = ShaderUse::Effect(surface, *slot);
+                    let (Some((_, program)), Some(temps)) =
+                        (self.shader_instances.get_mut(&key), fx.isf.as_ref())
+                    else {
+                        continue; // shader unavailable: identity
+                    };
+                    let _ = path;
+                    let (Some(to), Some(from)) = (
+                        self.fx_pipelines.get("fs_to_isf"),
+                        self.fx_pipelines.get("fs_from_isf"),
+                    ) else {
+                        continue;
+                    };
+                    fullscreen(encoder, to, &temps.in_view, ubind, input);
+                    let values = inputs
+                        .iter()
+                        .map(|(n, v)| (n.clone(), crate::effects::isf_value(v)))
+                        .collect();
+                    let images = HashMap::from([("inputImage".to_owned(), &temps.in_view)]);
+                    if program
+                        .render(
+                            &self.gpu,
+                            encoder,
+                            &crate::isf::IsfFrame {
+                                size: img_size,
+                                time: show_seconds,
+                                values: &values,
+                                images: &images,
+                                output: &temps.out_view,
+                            },
+                        )
+                        .is_err()
+                    {
+                        continue;
+                    }
+                    fullscreen(encoder, from, &fx.views[target], ubind, &temps.out_load);
+                } else {
+                    let entry = match pass {
+                        Pass::Color { .. } => "fs_color",
+                        Pass::Invert => "fs_invert",
+                        Pass::BlurH { .. } => "fs_blur_h",
+                        Pass::BlurV { .. } => "fs_blur_v",
+                        Pass::Pixelate { .. } => "fs_pixelate",
+                        Pass::Isf { .. } => continue,
+                    };
+                    let Some(pipeline) = self.fx_pipelines.get(entry) else {
+                        continue;
+                    };
+                    self.gpu.queue().write_buffer(
+                        ubuf,
+                        0,
+                        bytemuck::cast_slice(&crate::effects::uniform(pass)),
+                    );
+                    fullscreen(encoder, pipeline, &fx.views[target], ubind, input);
+                }
                 input = &fx.load_binds[target];
                 target = 1 - target;
+                wrote = true;
             }
-            let out = 1 - target;
+            let out = wrote.then_some(1 - target);
             if let Some(fx) = self.fx.get_mut(&surface) {
-                fx.output = Some(out);
+                fx.output = out;
             }
+        }
+    }
+
+    /// Creates the program for a shader use if its source is loaded and the
+    /// use has none (or one for a different path).
+    fn ensure_instance(&mut self, key: ShaderUse, path: &str) {
+        if self
+            .shader_instances
+            .get(&key)
+            .is_some_and(|(p, _)| p == path)
+        {
+            return;
+        }
+        self.shader_instances.remove(&key);
+        let Some(compiled) = self.shader_sources.get(path) else {
+            return;
+        };
+        match crate::isf::IsfProgram::new(&self.gpu, compiled) {
+            Ok(program) => {
+                self.shader_errors.remove(path);
+                self.shader_instances
+                    .insert(key, (path.to_owned(), program));
+            }
+            Err(e) => {
+                self.shader_errors.insert(path.to_owned(), e.to_string());
+            }
+        }
+    }
+
+    /// Loads (or reloads) a compiled shader; existing users restart.
+    pub fn set_shader(&mut self, path: &str, compiled: &om_isf::Compiled) {
+        self.shader_sources
+            .insert(path.to_owned(), compiled.clone());
+        self.shader_instances.retain(|_, (p, _)| p != path);
+        self.shader_errors.remove(path);
+    }
+
+    pub fn remove_shader(&mut self, path: &str) {
+        self.shader_sources.remove(path);
+        self.shader_instances.retain(|_, (p, _)| p != path);
+    }
+
+    /// GPU-side error for a shader (pipeline creation), if any.
+    #[must_use]
+    pub fn shader_error(&self, path: &str) -> Option<&str> {
+        self.shader_errors.get(path).map(String::as_str)
+    }
+
+    /// Renders shader-generated media into their media textures.
+    fn update_shader_media(
+        &mut self,
+        project: &Project,
+        inputs: &FrameInputs,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
+        let size = (project.canvas.width, project.canvas.height);
+        let shader_media: Vec<(
+            MediaId,
+            String,
+            std::collections::BTreeMap<String, om_project::ShaderValue>,
+        )> = project
+            .media
+            .iter()
+            .filter_map(|m| match &m.source {
+                om_project::MediaSource::Shader { path, inputs } => {
+                    Some((m.id, path.clone(), inputs.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        self.shader_instances.retain(|k, _| match k {
+            ShaderUse::Media(id) => shader_media.iter().any(|(m, ..)| m == id),
+            ShaderUse::Effect(..) => true,
+        });
+        self.shader_media_tmp
+            .retain(|id, _| shader_media.iter().any(|(m, ..)| m == id));
+        for (id, path, values) in shader_media {
+            self.ensure_instance(ShaderUse::Media(id), &path);
+            if !self.shader_instances.contains_key(&ShaderUse::Media(id)) {
+                self.images.remove(&id);
+                continue;
+            }
+            if !self.images.get(&id).is_some_and(|g| g.size == size) {
+                let image = self.create_render_media(size);
+                self.images.insert(id, image);
+            }
+            if !self
+                .shader_media_tmp
+                .get(&id)
+                .is_some_and(|t| t.size == size)
+            {
+                let t = self.create_isf_temps(size);
+                self.shader_media_tmp.insert(id, t);
+            }
+            let (Some((_, program)), Some(tmp), Some(img), Some(from)) = (
+                self.shader_instances.get_mut(&ShaderUse::Media(id)),
+                self.shader_media_tmp.get(&id),
+                self.images.get(&id),
+                self.fx_pipelines.get("fs_from_isf"),
+            ) else {
+                continue;
+            };
+            let time = inputs
+                .media_seconds
+                .get(&id)
+                .copied()
+                .unwrap_or(inputs.show_seconds);
+            let values = values
+                .iter()
+                .map(|(n, v)| (n.clone(), crate::effects::isf_value(v)))
+                .collect();
+            if program
+                .render(
+                    &self.gpu,
+                    encoder,
+                    &crate::isf::IsfFrame {
+                        size,
+                        time,
+                        values: &values,
+                        images: &HashMap::new(),
+                        output: &tmp.out_view,
+                    },
+                )
+                .is_err()
+            {
+                continue;
+            }
+            let view = img
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
+            fullscreen(encoder, from, &view, &self.dummy_fx.1, &tmp.out_load);
+        }
+    }
+
+    fn create_render_media(&self, size: (u32, u32)) -> GpuImage {
+        let device = self.gpu.device();
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("om shader media"),
+            size: wgpu::Extent3d {
+                width: size.0,
+                height: size.1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: WORKING_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        GpuImage {
+            bind_group: texture_bind_group(device, &self.media_layout, &view, &self.sampler),
+            load_bind: load_bind_group(device, &self.mask_layout, &view),
+            bytes: u64::from(size.0) * u64::from(size.1) * 8,
+            size,
+            texture,
+        }
+    }
+
+    fn create_isf_temps(&self, size: (u32, u32)) -> IsfTemps {
+        let device = self.gpu.device();
+        let make = || {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("om isf temp"),
+                size: wgpu::Extent3d {
+                    width: size.0,
+                    height: size.1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: WORKING_FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+        };
+        let (a, b) = (make(), make());
+        let in_view = a.create_view(&wgpu::TextureViewDescriptor::default());
+        let out_view = b.create_view(&wgpu::TextureViewDescriptor::default());
+        let out_load = load_bind_group(device, &self.mask_layout, &out_view);
+        IsfTemps {
+            size,
+            _textures: [a, b],
+            in_view,
+            out_view,
+            out_load,
         }
     }
 
@@ -895,6 +1206,7 @@ impl Compositor {
             texture_bind_group(device, &self.media_layout, &v1, &self.sampler),
         ];
         SurfaceFx {
+            isf: None,
             size,
             _textures: [t0, t1],
             views: [v0, v1],
@@ -1197,6 +1509,33 @@ fn texture_layout(device: &wgpu::Device, label: &str) -> wgpu::BindGroupLayout {
             },
         ],
     })
+}
+
+/// Draws one fullscreen pass.
+fn fullscreen(
+    encoder: &mut wgpu::CommandEncoder,
+    pipeline: &wgpu::RenderPipeline,
+    target: &wgpu::TextureView,
+    group0: &wgpu::BindGroup,
+    group1: &wgpu::BindGroup,
+) {
+    let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("om fullscreen"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: target,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        ..Default::default()
+    });
+    rp.set_pipeline(pipeline);
+    rp.set_bind_group(0, group0, &[]);
+    rp.set_bind_group(1, group1, &[]);
+    rp.draw(0..3, 0..1);
 }
 
 fn load_bind_group(

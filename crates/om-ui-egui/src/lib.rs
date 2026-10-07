@@ -455,6 +455,40 @@ impl OpenMapperApp {
                     self.queue(Command::RemoveMedia { id: m.id });
                 }
             });
+            if let MediaSource::Shader { path, inputs } = &m.source {
+                let compiled = self
+                    .viewer
+                    .as_ref()
+                    .and_then(|v| v.media.shader(path))
+                    .cloned();
+                if let Some(compiled) = compiled {
+                    let mut inputs = inputs.clone();
+                    let id = m.id;
+                    let path = path.clone();
+                    egui::CollapsingHeader::new("Shader inputs")
+                        .id_salt(("shader", id))
+                        .show(ui, |ui| {
+                            let edit = shader_input_controls(ui, &compiled, &mut inputs);
+                            if edit.changed {
+                                let cmd = Command::SetMediaSource {
+                                    id,
+                                    source: MediaSource::Shader {
+                                        path: path.clone(),
+                                        inputs: inputs.clone(),
+                                    },
+                                };
+                                if edit.dragging {
+                                    self.queue_coalescing(cmd, format!("shader:{id}"));
+                                } else {
+                                    self.queue(cmd);
+                                }
+                            }
+                            if edit.finished {
+                                self.end_coalescing = true;
+                            }
+                        });
+                }
+            }
             if m.source.is_time_based() {
                 ui.horizontal(|ui| {
                     ui.add_space(14.0);
@@ -821,6 +855,26 @@ impl OpenMapperApp {
                         },
                         EffectKind::Pixelate { size: 8 },
                     ];
+                    let shader_path = self.media_path_input.trim().to_owned();
+                    if shader_path.ends_with(".fs") {
+                        if ui.button(format!("Shader: {shader_path}")).clicked() {
+                            let stored = path_for_storage(
+                                self.session.project_dir(),
+                                std::path::Path::new(&shader_path),
+                            );
+                            effects.push(Effect {
+                                enabled: true,
+                                kind: EffectKind::Shader {
+                                    path: stored,
+                                    inputs: Default::default(),
+                                },
+                            });
+                            changed = Some(false);
+                            ui.close();
+                        }
+                    } else {
+                        ui.weak("Shader: type a .fs path in the media path field");
+                    }
                     for kind in options {
                         if ui.button(kind.label()).clicked() {
                             effects.push(Effect {
@@ -902,6 +956,22 @@ impl OpenMapperApp {
                         }
                     }
                     EffectKind::Invert {} => {}
+                    EffectKind::Shader { path, inputs } => {
+                        ui.weak(path.as_str());
+                        let viewer = self.viewer.as_ref();
+                        if let Some(err) = viewer.and_then(|v| v.shader_error(path)) {
+                            ui.colored_label(ui.visuals().error_fg_color, err);
+                        }
+                        if let Some(compiled) = viewer.and_then(|v| v.media.shader(path)).cloned() {
+                            let edit = shader_input_controls(ui, &compiled, inputs);
+                            if edit.changed {
+                                changed = Some(edit.dragging);
+                            }
+                            if edit.finished {
+                                self.end_coalescing = true;
+                            }
+                        }
+                    }
                 }
             });
         }
@@ -1359,11 +1429,167 @@ fn source_for_path(chosen: &std::path::Path, stored: String) -> MediaSource {
         .and_then(|e| e.to_str())
         .map(str::to_ascii_lowercase)
         .unwrap_or_default();
-    if VIDEO.contains(&ext.as_str()) {
+    if ext == "fs" {
+        MediaSource::Shader {
+            path: stored,
+            inputs: Default::default(),
+        }
+    } else if VIDEO.contains(&ext.as_str()) {
         MediaSource::Video { path: stored }
     } else {
         MediaSource::Image { path: stored }
     }
+}
+
+/// Result of editing shader inputs.
+#[derive(Default)]
+struct ShaderEdit {
+    changed: bool,
+    /// A slider/drag is in progress (coalesce into one undo step).
+    dragging: bool,
+    finished: bool,
+}
+
+/// Widgets for a shader's declared inputs (ISF header). Values not set
+/// explicitly show the shader's DEFAULT.
+fn shader_input_controls(
+    ui: &mut egui::Ui,
+    compiled: &om_isf::Compiled,
+    values: &mut std::collections::BTreeMap<String, om_project::ShaderValue>,
+) -> ShaderEdit {
+    use om_isf::InputKind;
+    use om_project::ShaderValue;
+    let mut edit = ShaderEdit::default();
+    let num =
+        |v: Option<&serde_json::Value>, d: f64| v.and_then(serde_json::Value::as_f64).unwrap_or(d);
+    let vec_of = |v: Option<&serde_json::Value>, n: usize, d: f64| -> Vec<f64> {
+        let mut out: Vec<f64> = v
+            .and_then(serde_json::Value::as_array)
+            .map(|a| a.iter().filter_map(serde_json::Value::as_f64).collect())
+            .unwrap_or_default();
+        out.resize(n, d);
+        out
+    };
+    let fin = |x: f64| om_types::Finite::new(x).unwrap_or(om_types::Finite::ZERO);
+    for input in &compiled.doc.inputs {
+        let label = input.label.clone().unwrap_or_else(|| input.name.clone());
+        let current = values.get(&input.name).cloned();
+        match input.kind {
+            InputKind::Image => {}
+            InputKind::Float => {
+                let mut x = match current {
+                    Some(ShaderValue::Number(n)) => n.get(),
+                    _ => num(input.default.as_ref(), 0.0),
+                };
+                let (lo, hi) = (num(input.min.as_ref(), 0.0), num(input.max.as_ref(), 1.0));
+                let r = ui.add(egui::Slider::new(&mut x, lo.min(hi)..=hi.max(lo)).text(&label));
+                if r.changed() {
+                    values.insert(input.name.clone(), ShaderValue::Number(fin(x)));
+                    edit.changed = true;
+                    edit.dragging = true;
+                }
+                edit.finished |= r.drag_stopped() || r.lost_focus();
+            }
+            InputKind::Bool | InputKind::Event => {
+                let mut b = match current {
+                    Some(ShaderValue::Bool(b)) => b,
+                    _ => input
+                        .default
+                        .as_ref()
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false),
+                };
+                if ui.checkbox(&mut b, &label).changed() {
+                    values.insert(input.name.clone(), ShaderValue::Bool(b));
+                    edit.changed = true;
+                }
+            }
+            InputKind::Long => {
+                let mut x = match current {
+                    Some(ShaderValue::Number(n)) => n.get().round() as i64,
+                    _ => num(input.default.as_ref(), 0.0).round() as i64,
+                };
+                let before = x;
+                if input.values.is_empty() {
+                    let (lo, hi) = (
+                        num(input.min.as_ref(), 0.0) as i64,
+                        num(input.max.as_ref(), 10.0) as i64,
+                    );
+                    ui.add(egui::Slider::new(&mut x, lo.min(hi)..=hi.max(lo)).text(&label));
+                } else {
+                    let name_of = |v: i64| {
+                        input
+                            .values
+                            .iter()
+                            .position(|x| *x == v)
+                            .and_then(|i| input.labels.get(i).cloned())
+                            .unwrap_or_else(|| v.to_string())
+                    };
+                    egui::ComboBox::from_label(&label)
+                        .selected_text(name_of(x))
+                        .show_ui(ui, |ui| {
+                            for v in &input.values {
+                                ui.selectable_value(&mut x, *v, name_of(*v));
+                            }
+                        });
+                }
+                if x != before {
+                    #[allow(clippy::cast_precision_loss)]
+                    values.insert(input.name.clone(), ShaderValue::Number(fin(x as f64)));
+                    edit.changed = true;
+                }
+            }
+            InputKind::Point2D => {
+                let mut v = match current {
+                    Some(ShaderValue::Vector(v)) => v.iter().map(|f| f.get()).collect(),
+                    _ => vec_of(input.default.as_ref(), 2, 0.0),
+                };
+                v.resize(2, 0.0);
+                let mut moved = false;
+                ui.horizontal(|ui| {
+                    ui.label(&label);
+                    for x in &mut v {
+                        let r = ui.add(egui::DragValue::new(x).speed(0.01));
+                        moved |= r.changed();
+                        edit.finished |= r.drag_stopped() || r.lost_focus();
+                    }
+                });
+                if moved {
+                    edit.changed = true;
+                    edit.dragging = true;
+                    values.insert(
+                        input.name.clone(),
+                        ShaderValue::Vector(v.into_iter().map(fin).collect()),
+                    );
+                }
+            }
+            InputKind::Color => {
+                let v = match current {
+                    Some(ShaderValue::Vector(v)) => v.iter().map(|f| f.get()).collect(),
+                    _ => vec_of(input.default.as_ref(), 4, 1.0),
+                };
+                #[allow(clippy::cast_possible_truncation)]
+                let mut rgba = [
+                    v[0] as f32,
+                    v[1] as f32,
+                    v[2] as f32,
+                    v.get(3).copied().unwrap_or(1.0) as f32,
+                ];
+                ui.horizontal(|ui| {
+                    ui.label(&label);
+                    if ui.color_edit_button_rgba_unmultiplied(&mut rgba).changed() {
+                        values.insert(
+                            input.name.clone(),
+                            ShaderValue::Vector(rgba.iter().map(|c| fin(f64::from(*c))).collect()),
+                        );
+                        edit.changed = true;
+                        edit.dragging = true;
+                    }
+                });
+            }
+        }
+    }
+    edit
 }
 
 fn open_message(path: &std::path::Path, report: &OpenReport) -> String {

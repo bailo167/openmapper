@@ -12,6 +12,7 @@ members = [
     "crates/om-output",
     "crates/om-media-ffmpeg",
     "crates/om-audio",
+    "crates/om-isf",
     "crates/om-engine",
     "crates/om-ui-egui",
     "apps/openmapper",
@@ -40,6 +41,7 @@ om-render = { path = "crates/om-render" }
 om-output = { path = "crates/om-output" }
 om-media-ffmpeg = { path = "crates/om-media-ffmpeg" }
 om-audio = { path = "crates/om-audio" }
+om-isf = { path = "crates/om-isf" }
 om-engine = { path = "crates/om-engine" }
 om-ui-egui = { path = "crates/om-ui-egui" }
 
@@ -57,7 +59,12 @@ glam = { version = "0.34.1", features = ["serde"] }
 egui = "=0.36.2"
 egui-wgpu = "=0.36.2"
 # Must equal the version egui-wgpu uses so the UI and renderer share a device (D-006).
-wgpu = "=30.0.1"
+wgpu = { version = "=30.0.1", features = ["naga-ir"] }
+# Same version as wgpu's; used to parse and validate translated ISF GLSL.
+# `wgsl-in` works around naga 30.0.1 compiling glsl-in without the
+# interpolator module it needs (upstream cfg bug).
+naga = { version = "=30.0.1", features = ["glsl-in", "wgsl-in"] }
+regex = "1.13.1"
 pollster = "1.0.1"
 bytemuck = { version = "1.25.2", features = ["derive"] }
 half = "2.7.1"

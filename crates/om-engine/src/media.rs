@@ -192,6 +192,12 @@ pub struct MediaChanges {
     pub upload: Vec<(MediaId, Arc<StillImage>)>,
     /// Media that no longer has pixels.
     pub unload: Vec<MediaId>,
+    /// Shaders compiled or recompiled (live reload), keyed by stored path.
+    pub shaders: Vec<(String, Arc<om_isf::Compiled>)>,
+    /// Stored paths of shaders that should be dropped (failed or unused).
+    pub shaders_removed: Vec<String>,
+    /// Each shader generator's own time (seconds) for this frame.
+    pub shader_times: Vec<(MediaId, f64)>,
 }
 
 impl MediaChanges {
@@ -207,6 +213,8 @@ type Key = (MediaSource, Option<PathBuf>, (u32, u32), bool);
 
 enum Content {
     Still(Arc<StillImage>),
+    /// Rendered on the GPU from a shader (see `MediaRuntime::shaders`).
+    Shader,
     Player {
         player: Box<VideoPlayer>,
         audio: Option<Arc<AudioPlayer>>,
@@ -239,6 +247,26 @@ pub struct MediaRuntime {
     audio: Option<AudioSetup>,
     entries: HashMap<MediaId, Entry>,
     last_retry: Option<Instant>,
+    shaders: HashMap<String, ShaderEntry>,
+    last_shader_check: Option<Instant>,
+}
+
+/// A loaded shader file, recompiled when it changes on disk.
+struct ShaderEntry {
+    resolved: PathBuf,
+    modified: Option<std::time::SystemTime>,
+    result: Result<Arc<om_isf::Compiled>, String>,
+}
+
+/// How often shader files are checked for edits (live shader editing).
+const SHADER_CHECK_INTERVAL: Duration = Duration::from_millis(300);
+
+fn compile_shader(path: &Path) -> Result<Arc<om_isf::Compiled>, String> {
+    let src = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let doc = om_isf::parse(&src).map_err(|e| format!("{}: {e}", path.display()))?;
+    om_isf::compile(&doc)
+        .map(Arc::new)
+        .map_err(|e| format!("{}: {e}", path.display()))
 }
 
 impl std::fmt::Debug for MediaRuntime {
@@ -269,6 +297,8 @@ impl MediaRuntime {
             opener,
             audio,
             entries: HashMap::new(),
+            shaders: HashMap::new(),
+            last_shader_check: None,
             last_retry: None,
         }
     }
@@ -322,6 +352,23 @@ impl MediaRuntime {
                 position: None,
                 duration: None,
             },
+            Ok(Content::Shader) => {
+                let shader = project
+                    .media_item(id)
+                    .and_then(|m| m.source.path())
+                    .and_then(|p| self.shaders.get(p));
+                MediaStatus {
+                    error: shader.and_then(|s| s.result.as_ref().err().cloned()),
+                    summary: shader.and_then(|s| s.result.as_ref().ok()).map(|c| {
+                        c.doc
+                            .description
+                            .clone()
+                            .unwrap_or_else(|| "ISF shader".into())
+                    }),
+                    position: Some(media_time(show, e.restart_at, playback, None)),
+                    duration: None,
+                }
+            }
             Ok(Content::Still(img)) => MediaStatus {
                 error: None,
                 summary: Some(format!("{}×{}", img.width(), img.height())),
@@ -419,11 +466,97 @@ impl MediaRuntime {
                 }
             }
         }
+        self.update_shaders(project, project_dir, &mut changes);
+        for m in &project.media {
+            if let (MediaSource::Shader { .. }, Some(e)) = (&m.source, self.entries.get(&m.id)) {
+                let t = player_time(show, e.restart_at, m.playback, None);
+                changes.shader_times.push((m.id, t.as_seconds_f64()));
+            }
+        }
         self.publish_voices(project);
         changes.upload.sort_by_key(|(id, _)| *id);
         changes.unload.sort();
         changes.unload.dedup();
         changes
+    }
+
+    /// Status of a shader file referenced by an effect or media item.
+    #[must_use]
+    pub fn shader_error(&self, stored_path: &str) -> Option<&str> {
+        self.shaders
+            .get(stored_path)
+            .and_then(|s| s.result.as_ref().err())
+            .map(String::as_str)
+    }
+
+    /// Compiled shader for a stored path (for building input controls).
+    #[must_use]
+    pub fn shader(&self, stored_path: &str) -> Option<&Arc<om_isf::Compiled>> {
+        self.shaders
+            .get(stored_path)
+            .and_then(|s| s.result.as_ref().ok())
+    }
+
+    /// Loads referenced shaders and recompiles any edited on disk.
+    fn update_shaders(
+        &mut self,
+        project: &Project,
+        project_dir: Option<&Path>,
+        changes: &mut MediaChanges,
+    ) {
+        let mut wanted: HashSet<String> = HashSet::new();
+        for m in &project.media {
+            if let MediaSource::Shader { path, .. } = &m.source {
+                wanted.insert(path.clone());
+            }
+        }
+        for s in &project.surfaces {
+            for e in &s.effects {
+                if let om_project::EffectKind::Shader { path, .. } = &e.kind {
+                    wanted.insert(path.clone());
+                }
+            }
+        }
+        let removed: Vec<String> = self
+            .shaders
+            .keys()
+            .filter(|k| !wanted.contains(*k))
+            .cloned()
+            .collect();
+        for k in removed {
+            self.shaders.remove(&k);
+            changes.shaders_removed.push(k);
+        }
+        let check = self
+            .last_shader_check
+            .is_none_or(|t| t.elapsed() >= SHADER_CHECK_INTERVAL);
+        if check {
+            self.last_shader_check = Some(Instant::now());
+        }
+        for stored in wanted {
+            let resolved = resolve_media_path(project_dir, &stored);
+            let modified = || std::fs::metadata(&resolved).and_then(|m| m.modified()).ok();
+            let stale = match self.shaders.get(&stored) {
+                None => true,
+                Some(e) => e.resolved != resolved || (check && e.modified != modified()),
+            };
+            if !stale {
+                continue;
+            }
+            let result = compile_shader(&resolved);
+            match &result {
+                Ok(c) => changes.shaders.push((stored.clone(), Arc::clone(c))),
+                Err(_) => changes.shaders_removed.push(stored.clone()),
+            }
+            self.shaders.insert(
+                stored,
+                ShaderEntry {
+                    modified: modified(),
+                    resolved,
+                    result,
+                },
+            );
+        }
     }
 
     /// Hands the mixer one voice per audible soundtrack. Only normal speed
@@ -454,6 +587,7 @@ impl MediaRuntime {
 
     fn load(&self, key: &Key) -> Result<Content, String> {
         match (&key.0, &key.1) {
+            (MediaSource::Shader { .. }, _) => Ok(Content::Shader),
             (MediaSource::Image { .. }, Some(path)) => StillImage::load(path)
                 .map(|i| Content::Still(Arc::new(i)))
                 .map_err(|e| e.to_string()),

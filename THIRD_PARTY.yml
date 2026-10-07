@@ -12,3 +12,7 @@ entries:
     name: Apache License, Version 2.0 (canonical text)
     licence: Apache-2.0
     source: https://www.apache.org/licenses/LICENSE-2.0.txt
+  - path: crates/om-isf/tests/corpus/*.fs
+    name: OpenMapper ISF conformance corpus (original, first-party)
+    licence: Apache-2.0
+    source: written for OpenMapper; no third-party shader code

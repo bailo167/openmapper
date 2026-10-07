@@ -16,7 +16,7 @@ pub use migrate::{CURRENT_VERSION, FORMAT};
 pub use schema::{
     BlendMode, Canvas, DisplayTarget, Effect, EffectKind, Extensions, MAX_BLUR_RADIUS, MAX_EFFECTS,
     MAX_MASK_POINTS, MAX_MESH_DIVISIONS, Mask, MaskPoint, Media, MediaSource, Output, PatternKind,
-    Playback, Project, Shape, Show, Surface, Timebase, line_quad,
+    Playback, Project, ShaderValue, Shape, Show, Surface, Timebase, line_quad,
 };
 
 use std::collections::HashSet;

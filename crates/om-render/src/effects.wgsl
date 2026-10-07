@@ -104,3 +104,18 @@ fn fs_pixelate(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let centre = (p / vec2<i32>(n)) * n + vec2<i32>(n / 2);
     return load(centre);
 }
+
+// Conversions around ISF shaders, which (like GL tools) work on sRGB-encoded
+// straight-alpha colour.
+@fragment
+fn fs_to_isf(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
+    let c = load(vec2<i32>(frag.xy));
+    return vec4<f32>(unpack(c), c.a);
+}
+
+@fragment
+fn fs_from_isf(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
+    let c = load(vec2<i32>(frag.xy));
+    let a = clamp(c.a, 0.0, 1.0);
+    return pack(c.rgb, a);
+}

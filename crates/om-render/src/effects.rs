@@ -7,8 +7,15 @@ use om_project::EffectKind;
 use crate::colour::{linear_to_srgb, quantize_f16, srgb_to_linear};
 
 /// One GPU/CPU pass of an effect (blur is two passes).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Pass {
+    /// An ISF filter, identified by its stored path; `slot` is the effect's
+    /// index in the chain (each slot keeps its own shader state).
+    Isf {
+        path: String,
+        slot: usize,
+        inputs: std::collections::BTreeMap<String, om_project::ShaderValue>,
+    },
     Color {
         brightness: f32,
         contrast: f32,
@@ -53,7 +60,7 @@ pub fn blur_weights(radius: f64) -> (i32, [f32; 64]) {
 #[allow(clippy::cast_possible_truncation)]
 pub fn passes<'a>(effects: impl IntoIterator<Item = &'a EffectKind>) -> Vec<Pass> {
     let mut out = Vec::new();
-    for e in effects {
+    for (slot, e) in effects.into_iter().enumerate() {
         match e {
             EffectKind::Color {
                 brightness,
@@ -83,6 +90,11 @@ pub fn passes<'a>(effects: impl IntoIterator<Item = &'a EffectKind>) -> Vec<Pass
                 size: i32::from(*size),
             }),
             EffectKind::Pixelate { .. } => {}
+            EffectKind::Shader { path, inputs } => out.push(Pass::Isf {
+                path: path.clone(),
+                slot,
+                inputs: inputs.clone(),
+            }),
         }
     }
     out
@@ -93,7 +105,7 @@ pub fn passes<'a>(effects: impl IntoIterator<Item = &'a EffectKind>) -> Vec<Pass
 #[allow(clippy::cast_precision_loss)]
 pub fn uniform(pass: &Pass) -> [f32; 72] {
     let mut u = [0f32; 72];
-    match *pass {
+    match pass.clone() {
         Pass::Color {
             brightness,
             contrast,
@@ -110,6 +122,7 @@ pub fn uniform(pass: &Pass) -> [f32; 72] {
             u[8..].copy_from_slice(&weights);
         }
         Pass::Pixelate { size } => u[4] = size as f32,
+        Pass::Isf { .. } => {}
     }
     u
 }
@@ -126,6 +139,18 @@ fn pack(s: [f32; 3], a: f32) -> [f32; 4] {
     [l[0], l[1], l[2], a]
 }
 
+/// Converts a stored shader value for the ISF runtime.
+#[must_use]
+pub fn isf_value(v: &om_project::ShaderValue) -> crate::isf::IsfValue {
+    match v {
+        om_project::ShaderValue::Bool(b) => crate::isf::IsfValue::Bool(*b),
+        om_project::ShaderValue::Number(n) => crate::isf::IsfValue::Number(n.get()),
+        om_project::ShaderValue::Vector(v) => {
+            crate::isf::IsfValue::Vector(v.iter().map(|f| f.get()).collect())
+        }
+    }
+}
+
 /// Applies `pass` to a `w × h` linear premultiplied image (CPU reference),
 /// storing results as half floats like the GPU's intermediate textures.
 #[must_use]
@@ -139,7 +164,7 @@ pub fn apply(pass: &Pass, src: &[[f32; 4]], w: usize, h: usize) -> Vec<[f32; 4]>
     for y in 0..h as i64 {
         for x in 0..w as i64 {
             let c = at(x, y);
-            let v = match *pass {
+            let v = match pass.clone() {
                 Pass::Color {
                     brightness,
                     contrast,
@@ -193,6 +218,10 @@ pub fn apply(pass: &Pass, src: &[[f32; 4]], w: usize, h: usize) -> Vec<[f32; 4]>
                     let n = i64::from(size);
                     at((x / n) * n + n / 2, (y / n) * n + n / 2)
                 }
+                // ISF shaders are not emulated on the CPU (tested against
+                // analytic results instead); the reference treats them as
+                // identity.
+                Pass::Isf { .. } => c,
             };
             out.push(v.map(quantize_f16));
         }

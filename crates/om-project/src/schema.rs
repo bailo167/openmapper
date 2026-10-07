@@ -121,7 +121,7 @@ impl Default for Playback {
 }
 
 /// Where a media item's pixels come from.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MediaSource {
     /// A still image file. `path` is relative to the project file's
@@ -133,6 +133,12 @@ pub enum MediaSource {
     Sequence { path: String, rate: Rate },
     /// A procedurally generated pattern; needs no files.
     Pattern { pattern: PatternKind },
+    /// An ISF generator shader (`.fs`) rendered every frame at canvas size.
+    Shader {
+        path: String,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        inputs: BTreeMap<String, ShaderValue>,
+    },
 }
 
 impl MediaSource {
@@ -140,7 +146,10 @@ impl MediaSource {
     #[must_use]
     pub fn path(&self) -> Option<&str> {
         match self {
-            Self::Image { path } | Self::Video { path } | Self::Sequence { path, .. } => Some(path),
+            Self::Image { path }
+            | Self::Video { path }
+            | Self::Sequence { path, .. }
+            | Self::Shader { path, .. } => Some(path),
             Self::Pattern { .. } => None,
         }
     }
@@ -148,7 +157,10 @@ impl MediaSource {
     /// True for sources with a timeline (video, sequences).
     #[must_use]
     pub fn is_time_based(&self) -> bool {
-        matches!(self, Self::Video { .. } | Self::Sequence { .. })
+        matches!(
+            self,
+            Self::Video { .. } | Self::Sequence { .. } | Self::Shader { .. }
+        )
     }
 }
 
@@ -290,6 +302,21 @@ pub enum EffectKind {
     Blur { radius: Finite },
     /// Square blocks of `size` media pixels, 1..=256.
     Pixelate { size: u16 },
+    /// An ISF filter shader (`.fs` with an `inputImage` input).
+    Shader {
+        path: String,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        inputs: BTreeMap<String, ShaderValue>,
+    },
+}
+
+/// A value for a shader input: bool, number, or vector (point2D, colour).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ShaderValue {
+    Bool(bool),
+    Number(Finite),
+    Vector(Vec<Finite>),
 }
 
 fn finite_one() -> Finite {
@@ -340,6 +367,13 @@ impl EffectKind {
                     Err(format!("pixelate size {size} is outside 1..=256"))
                 }
             }
+            Self::Shader { path, .. } => {
+                if path.trim().is_empty() {
+                    Err("shader effect has an empty path".into())
+                } else {
+                    Ok(())
+                }
+            }
         }
     }
 
@@ -351,6 +385,7 @@ impl EffectKind {
             Self::Invert {} => "Invert",
             Self::Blur { .. } => "Blur",
             Self::Pixelate { .. } => "Pixelate",
+            Self::Shader { .. } => "Shader",
         }
     }
 }

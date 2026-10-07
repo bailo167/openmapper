@@ -13,12 +13,16 @@ om-geom.workspace = true
 om-project.workspace = true
 om-media-core.workspace = true
 om-gpu.workspace = true
+om-isf.workspace = true
+serde_json.workspace = true
 wgpu.workspace = true
 bytemuck.workspace = true
 half.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+om-isf.workspace = true
+half.workspace = true
 
 [lints]
 workspace = true
