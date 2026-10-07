@@ -108,9 +108,11 @@ impl Fixture {
 }
 
 /// Asserts GPU ≈ CPU in the interior (edges are checked separately by
-/// `geometry_edges_within_one_pixel`). `max_tol` is 1 for smooth media; media
-/// with hard texel discontinuities get 4 (see tests/tolerances.md). Mean and
-/// p99.9 tiers are fixed.
+/// `geometry_edges_within_one_pixel`). Mean ≤ 0.25 codes always applies.
+/// Smooth media (`Some(max)`) must also meet p99.9 ≤ 2 and the max bound.
+/// Hard-edged media (`None`) allow p99.9 ≤ 4 and no max bound: there the
+/// tail measures the driver's sub-texel filter precision, not mapping
+/// correctness (tests/tolerances.md).
 fn assert_matches_reference(
     gpu_px: &[u8],
     cpu: &reference::RefFrame,
@@ -125,8 +127,9 @@ fn assert_matches_reference(
         "{label}: interior mean {}",
         interior.mean
     );
+    let p999_limit = if max_tol.is_some() { 2 } else { 4 };
     assert!(
-        interior.p999 <= 2,
+        interior.p999 <= p999_limit,
         "{label}: interior p99.9 {}",
         interior.p999
     );
