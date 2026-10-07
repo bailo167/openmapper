@@ -38,6 +38,8 @@ const TICK: Duration = Duration::from_millis(10);
 const MAX_LOG: usize = 256;
 /// Largest frame accepted (pixels).
 const MAX_PIXELS: u64 = 8192 * 8192;
+/// Most entries per table (8 bytes of host memory each).
+pub const MAX_TABLE_ELEMENTS: usize = 10_000;
 
 /// Why a plugin could not be loaded or run.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -152,6 +154,8 @@ impl PluginHost {
         config.epoch_interruption(true);
         let engine = Engine::new(&config).map_err(|e| PluginError::Invalid(e.to_string()))?;
         let stop = Arc::new(AtomicBool::new(false));
+        // Without the ticker, wall-clock deadlines would silently stop
+        // working, so failing to start it is an error.
         let ticker = {
             let (engine, stop) = (engine.clone(), Arc::clone(&stop));
             std::thread::Builder::new()
@@ -162,13 +166,13 @@ impl PluginHost {
                         engine.increment_epoch();
                     }
                 })
-                .ok()
+                .map_err(|e| PluginError::Invalid(format!("cannot start the plugin timer: {e}")))?
         };
         Ok(Self {
             engine,
             limits,
             stop,
-            ticker,
+            ticker: Some(ticker),
         })
     }
 
@@ -242,6 +246,8 @@ impl PluginHost {
                 .memory_size(self.limits.memory)
                 .memories(1)
                 .tables(4)
+                // Table memory is host memory outside the guest memory cap.
+                .table_elements(MAX_TABLE_ELEMENTS)
                 .instances(1)
                 .build(),
             log: Arc::clone(&log),

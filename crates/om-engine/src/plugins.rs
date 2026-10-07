@@ -18,6 +18,21 @@ use om_types::MediaId;
 
 use crate::media::resolve_media_path;
 
+/// Most plugin instances (threads) running across all media.
+pub const MAX_RUNNERS: usize = 64;
+
+fn resolve(plugin: &Plugin, use_: &PluginUse) -> Vec<f32> {
+    let given: BTreeMap<String, f32> = use_
+        .params
+        .iter()
+        .map(|(k, v)| {
+            #[allow(clippy::cast_possible_truncation)]
+            (k.clone(), v.get() as f32)
+        })
+        .collect();
+    plugin.manifest.resolve_params(&given)
+}
+
 /// Largest plugin file read.
 pub const MAX_MODULE_BYTES: u64 = 16 << 20;
 
@@ -125,14 +140,41 @@ impl PluginStage {
         self.chains.clear();
     }
 
-    /// Starts and stops chains to match the project.
+    /// Starts and stops chains to match the project. Parameter-only
+    /// changes update running plugins in place (no restart).
     pub fn sync(&mut self, project: &Project, project_dir: Option<&Path>) {
+        let same_plugins = |a: &[PluginUse], b: &[PluginUse]| {
+            a.len() == b.len()
+                && a.iter()
+                    .zip(b)
+                    .all(|(x, y)| x.path == y.path && x.enabled == y.enabled)
+        };
+        let modules = &self.modules;
         self.chains.retain(|id, chain| {
-            project
-                .media
-                .iter()
-                .any(|m| m.id == *id && m.plugins == chain.config)
+            let Some(m) = project.media.iter().find(|m| m.id == *id) else {
+                return false;
+            };
+            if m.plugins == chain.config {
+                return true;
+            }
+            if !same_plugins(&m.plugins, &chain.config) || !chain.errors.is_empty() {
+                return false;
+            }
+            for (stage, use_) in chain
+                .stages
+                .iter_mut()
+                .zip(m.plugins.iter().filter(|p| p.enabled))
+            {
+                let path = resolve_media_path(project_dir, &use_.path);
+                let canonical = std::fs::canonicalize(&path).unwrap_or(path);
+                if let Some(Ok(plugin)) = modules.get(&canonical) {
+                    stage.params = resolve(plugin, use_);
+                }
+            }
+            chain.config = m.plugins.clone();
+            true
         });
+        let mut running: usize = self.chains.values().map(|c| c.stages.len()).sum();
         for m in &project.media {
             if m.plugins.iter().all(|p| !p.enabled) || self.chains.contains_key(&m.id) {
                 continue;
@@ -142,16 +184,12 @@ impl PluginStage {
             for use_ in m.plugins.iter().filter(|p| p.enabled) {
                 let path = resolve_media_path(project_dir, &use_.path);
                 match (self.module(&path), self.host()) {
+                    (Ok(_), Some(_)) if running >= MAX_RUNNERS => {
+                        errors.push(format!("more than {MAX_RUNNERS} plugins running"));
+                    }
                     (Ok(plugin), Some(host)) => {
-                        let given: BTreeMap<String, f32> = use_
-                            .params
-                            .iter()
-                            .map(|(k, v)| {
-                                #[allow(clippy::cast_possible_truncation)]
-                                (k.clone(), v.get() as f32)
-                            })
-                            .collect();
-                        let params = plugin.manifest.resolve_params(&given);
+                        running += 1;
+                        let params = resolve(&plugin, use_);
                         stages.push(StageRun {
                             name: plugin.manifest.name.clone(),
                             runner: PluginRunner::spawn(host, plugin),
@@ -356,6 +394,19 @@ mod tests {
         assert_eq!(out[0].1.rgba8(), &[245, 235, 225, 255, 55, 155, 255, 128]);
         assert!(!stage.shows_original(id));
         assert!(stage.status(id)[0].ok);
+
+        // A parameter change updates the running plugin (no restart: its
+        // frame count keeps going) and takes effect on the next frame.
+        let before = stage.status(id)[0].state.clone();
+        let mut copy = use_("invert.wat");
+        copy.params
+            .insert("amount".into(), om_types::Finite::new(0.2).unwrap());
+        stage.sync(&project(vec![copy]), Some(dir.path()));
+        assert_eq!(stage.status(id)[0].state, before, "same runner");
+        assert!(!stage.shows_original(id));
+        stage.submit(id, &img, 0.0);
+        let out = wait_output(&mut stage);
+        assert_eq!(out[0].1.rgba8(), img.rgba8(), "amount < 0.5 copies");
 
         // Two inverts cancel out.
         stage.sync(

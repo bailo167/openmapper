@@ -48,6 +48,9 @@ pub enum RunnerState {
     },
 }
 
+/// Log lines kept between [`PluginRunner::take_log`] calls (newest win).
+pub const MAX_LOG_LINES: usize = 256;
+
 #[derive(Debug, Default)]
 struct Inner {
     pending: Option<(u64, Job)>,
@@ -56,6 +59,14 @@ struct Inner {
     log: Vec<String>,
     processed: u64,
     done: bool,
+}
+
+impl Inner {
+    fn log(&mut self, lines: impl IntoIterator<Item = String>) {
+        self.log.extend(lines);
+        let excess = self.log.len().saturating_sub(MAX_LOG_LINES);
+        self.log.drain(..excess);
+    }
 }
 
 struct Shared {
@@ -106,6 +117,11 @@ impl PluginRunner {
                 })
                 .ok()
         };
+        if thread.is_none() {
+            shared.lock().state = Some(RunnerState::Disabled {
+                error: PluginError::Invalid("could not start a plugin thread".into()),
+            });
+        }
         Self {
             shared,
             stop,
@@ -168,17 +184,15 @@ impl PluginRunner {
 
 impl Drop for PluginRunner {
     fn drop(&mut self) {
+        // Never waits on plugin code: the thread finishes any call in
+        // progress (bounded by the epoch deadline), sees `stop` and exits.
+        // Joined only if already finished, otherwise detached.
         self.stop.store(true, Ordering::Relaxed);
         self.shared.wake.notify_all();
-        if let Some(t) = self.thread.take() {
-            // The epoch deadline bounds any call in progress.
-            let deadline = Instant::now() + Duration::from_secs(3);
-            while !self.shared.lock().done && Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(2));
-            }
-            if self.shared.lock().done {
-                let _ = t.join();
-            }
+        if let Some(t) = self.thread.take()
+            && self.shared.lock().done
+        {
+            let _ = t.join();
         }
     }
 }
@@ -218,6 +232,9 @@ fn run(host: &PluginHost, plugin: &Plugin, shared: &Shared, stop: &AtomicBool) {
         let Some(inst) = instance.as_mut() else {
             continue;
         };
+        if stop.load(Ordering::Relaxed) {
+            return;
+        }
         let result = inst.process(&job.rgba, job.width, job.height, &job.params, job.time);
         let log = inst.take_log();
         match result {
@@ -232,19 +249,17 @@ fn run(host: &PluginHost, plugin: &Plugin, shared: &Shared, stop: &AtomicBool) {
                 });
                 inner.processed += 1;
                 inner.state = Some(RunnerState::Running);
-                inner.log.extend(log);
-                inner.log.truncate(1024);
+                inner.log(log);
             }
             Err(PluginError::Failed(code)) => {
-                shared
-                    .lock()
-                    .log
-                    .push(format!("plugin returned error {code}"));
+                let mut inner = shared.lock();
+                inner.log(log);
+                inner.log([format!("plugin returned error {code}")]);
             }
             Err(error) => {
                 instance = None;
                 faults += 1;
-                shared.lock().log.extend(log);
+                shared.lock().log(log);
                 if !record_fault(shared, error, faults, stop) {
                     return;
                 }

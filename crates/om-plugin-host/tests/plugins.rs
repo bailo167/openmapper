@@ -252,3 +252,72 @@ fn runner_never_blocks_callers_and_disables_a_hanging_plugin() {
     assert_eq!(runner.state(), RunnerState::Running);
     assert_eq!(runner.take_log(), vec!["processing"]);
 }
+
+#[test]
+fn table_growth_is_capped_outside_guest_memory() {
+    let h = host();
+    // Declaring a huge table fails to instantiate.
+    let big = plugin("", BASIC, "(i32.const 0)").replace(
+        "(memory (export \"memory\") 1)",
+        "(memory (export \"memory\") 1) (table 100000000 funcref)",
+    );
+    let p = h.load(big.as_bytes());
+    assert!(p.is_err(), "huge table refused at load");
+    // Growing a small table past the cap fails inside the guest.
+    let grow = plugin(
+        "",
+        BASIC,
+        "(if (i32.ne (table.grow $t (ref.null func) (i32.const 50000000)) (i32.const -1)) (then (unreachable))) (i32.const 0)",
+    )
+    .replace(
+        "(memory (export \"memory\") 1)",
+        "(memory (export \"memory\") 1) (table $t 1 funcref)",
+    );
+    let p = h.load(grow.as_bytes()).unwrap();
+    let mut inst = h.instantiate(&p).unwrap();
+    // The guest saw the grow fail (-1) instead of trapping on success.
+    assert!(inst.process(&frame(2, 2), 2, 2, &[], 0.0).is_ok());
+}
+
+#[test]
+fn failing_plugin_logs_stay_bounded_and_drop_never_waits() {
+    let h = Arc::new(host());
+    let fails = h
+        .load(plugin("", BASIC, "(i32.const 7)").as_bytes())
+        .unwrap();
+    let mut runner = PluginRunner::spawn(Arc::clone(&h), fails);
+    let f = Arc::new(frame(4, 4));
+    let job = || Job {
+        rgba: Arc::clone(&f),
+        width: 4,
+        height: 4,
+        params: Vec::new(),
+        time: 0.0,
+    };
+    // Each processed job logs one failure; never taking the log must not
+    // grow it past the cap.
+    for _ in 0..(om_plugin_host::runner::MAX_LOG_LINES + 100) {
+        runner.submit(job());
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    std::thread::sleep(Duration::from_millis(100));
+    let log = runner.take_log();
+    assert!(!log.is_empty());
+    assert!(
+        log.len() <= om_plugin_host::runner::MAX_LOG_LINES,
+        "{}",
+        log.len()
+    );
+    drop(runner);
+
+    // Drop while a plugin is mid-call returns at once.
+    let spin = h
+        .load(plugin("", BASIC, "(loop $l (br $l)) (i32.const 0)").as_bytes())
+        .unwrap();
+    let mut runner = PluginRunner::spawn(h, spin);
+    runner.submit(job());
+    std::thread::sleep(Duration::from_millis(50));
+    let t = Instant::now();
+    drop(runner);
+    assert!(t.elapsed() < Duration::from_millis(50), "{:?}", t.elapsed());
+}
