@@ -26,8 +26,9 @@ pub use schema::{
     Timebase, line_quad, validate_stream_url,
 };
 pub use show::{
-    AudioBand, Controls, Cue, CueValue, Ease, Keyframe, LfoShape, Marker, Master, MidiBinding,
-    MidiMessageKind, MidiTarget, ModSource, Modulator, Show, Timeline, Track,
+    AudioBand, Controls, Cue, CueValue, DmxBinding, DmxInput, Ease, Keyframe, LfoShape,
+    MAX_CONTROL_BINDINGS, MAX_INPUT_UNIVERSE, Marker, Master, MidiBinding, MidiMessageKind,
+    MidiTarget, ModSource, Modulator, Show, Timeline, Track,
 };
 
 use std::collections::HashSet;
@@ -210,6 +211,9 @@ impl Project {
             if let Some(Err(e)) = o.projection.as_ref().map(Projection::validate) {
                 return invalid(format!("output {}: {e}", o.id));
             }
+        }
+        if let Err(e) = self.controls.validate() {
+            return invalid(format!("controls: {e}"));
         }
         if let Err(e) = self.dmx.validate() {
             return invalid(format!("DMX: {e}"));

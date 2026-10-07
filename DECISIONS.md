@@ -244,8 +244,8 @@ project id as its CID, so a project keeps its identity across restarts,
 and it terminates streams on stop. ArtSync and sACN synchronisation are
 not sent yet: every universe of a frame is sent back-to-back, and fixtures
 that need tearing-free latching across universes are a later option.
-DMX **input** (Art-Net/sACN as a control source) is deferred to the
-control work in a later milestone; `dmx monitor` covers diagnostics. The
+DMX **input** (Art-Net/sACN as a control source) was deferred here to the
+control work in a later milestone (done in D-028); `dmx monitor` covers diagnostics. The
 physical node test stays pending hardware, so the DMX parity rows are
 verified in software and the node row is implemented-unverified.
 
@@ -319,3 +319,17 @@ FFT, full-scale sine = 1) per channel, one texture row per channel with
 channel 0 at the bottom (ISF's bottom-left origin). Sizes are fixed;
 `MAX` is ignored. The FFT is computed on the UI thread from a copy of the
 analyser's ring, never inside the audio callback lock.
+
+## D-028 — DMX input as a control source (2026-10-07)
+
+Art-Net and sACN input drive parameters and cues like MIDI: bindings name a
+universe and channel (optionally a 16-bit pair) and reuse the MIDI target
+type. Input is **off by default** and, once enabled, listens on all
+interfaces (consoles are on the lighting network). Because DMX repeats
+continuously, a binding emits only on change; cue triggers need a rising
+edge through 50 % and never fire on first sight of a universe, so
+connecting a console mid-show cannot fire cues. Sources are not merged
+(newest packet wins); HTP/LTP merging and sACN priority arbitration are
+later options. Sockets are non-blocking and drained once a frame with a
+per-frame packet budget, and per-universe state is kept only for bound
+universes (bounded), so a packet flood cannot stall a frame or grow memory.

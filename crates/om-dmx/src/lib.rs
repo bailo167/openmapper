@@ -5,8 +5,10 @@
 //!   specification and ANSI E1.31-2018.
 //! - [`mapping`]: fixture pixel positions, channel slots and sampling.
 //! - [`net`]: the fixed-rate sender thread and datagram parsing.
+//! - [`input`]: Art-Net / sACN input sockets for control.
 
 pub mod artnet;
+pub mod input;
 pub mod mapping;
 pub mod net;
 pub mod runtime;

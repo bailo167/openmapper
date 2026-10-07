@@ -20,6 +20,7 @@ om-show.workspace = true
 om-osc.workspace = true
 om-oscquery.workspace = true
 om-midi.workspace = true
+om-dmx.workspace = true
 om-time.workspace = true
 thiserror.workspace = true
 

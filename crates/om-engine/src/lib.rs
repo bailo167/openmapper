@@ -7,6 +7,7 @@
 //! everywhere.
 
 mod discovery;
+pub mod dmx_input;
 pub mod live;
 mod media;
 pub mod plugins;

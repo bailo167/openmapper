@@ -3267,6 +3267,7 @@ dependencies = [
  "image",
  "om-audio",
  "om-command",
+ "om-dmx",
  "om-geom",
  "om-isf",
  "om-media-core",

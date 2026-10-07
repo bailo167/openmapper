@@ -32,6 +32,6 @@
   notes: Pending a physical Art-Net/sACN node and LED fixture (human test).
 - feature: dmx.input-control
   priority: P1
-  status: deferred
-  tests: []
-  notes: DECISIONS.md D-024 — Art-Net/sACN as a control source comes with later control work.
+  status: verified
+  tests: [input_receives_artnet_and_sacn_and_skips_junk, values_scale_and_only_changes_are_sent, sixteen_bit_channels_use_coarse_then_fine, cues_fire_on_rising_edges_only, learn_binds_the_channel_that_moves_over_the_network]
+  notes: Art-Net/sACN input bound to parameters and cues, 8/16-bit, learn (D-028). Newest packet wins; no source merging. Loopback-verified; a physical console test rides with the node test.

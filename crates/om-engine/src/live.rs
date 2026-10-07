@@ -247,6 +247,8 @@ pub struct Live {
     pub servers: ControlServers,
     pub midi: om_midi::MidiInputs,
     pub mapper: om_midi::Mapper,
+    /// Art-Net / sACN input.
+    pub dmx: crate::dmx_input::DmxControl,
     /// Overrides from the last frame (for UI display).
     pub overrides: Overrides,
     /// Disable to keep tests from touching MIDI devices / mDNS.
@@ -294,6 +296,8 @@ impl Live {
                 .iter()
                 .any(|t| self.show.timeline_playing(t.id))
             || project.show.modulators.iter().any(|m| m.enabled)
+            // Input arrives without UI events; keep polling it.
+            || project.controls.dmx_input.enabled
     }
 
     /// Without MIDI devices or mDNS advertisement (tests, headless use).
@@ -330,6 +334,22 @@ impl Live {
                     if let Err(e) = session.execute(om_command::Command::SetControls { controls }) {
                         self.servers.errors.push(e.to_string());
                     }
+                }
+            }
+        }
+        if self.devices {
+            self.dmx.configure(&session.project().controls.dmx_input);
+            let (msgs, learned) = self.dmx.poll(session.project());
+            messages.extend(msgs);
+            if let Some(binding) = learned {
+                let mut controls = session.project().controls.clone();
+                controls
+                    .dmx_input
+                    .bindings
+                    .retain(|b| !(b.universe == binding.universe && b.channel == binding.channel));
+                controls.dmx_input.bindings.push(binding);
+                if let Err(e) = session.execute(om_command::Command::SetControls { controls }) {
+                    self.servers.errors.push(e.to_string());
                 }
             }
         }

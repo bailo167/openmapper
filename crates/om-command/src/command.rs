@@ -681,14 +681,7 @@ impl Command {
                 })
             }
             Self::SetControls { controls } => {
-                for b in &controls.midi {
-                    if !(1..=16).contains(&b.channel) || b.number > 127 {
-                        return Err(CommandError::Invalid(format!(
-                            "MIDI binding channel {} / number {} out of range",
-                            b.channel, b.number
-                        )));
-                    }
-                }
+                controls.validate().map_err(CommandError::Invalid)?;
                 let old = std::mem::replace(&mut project.controls, controls.clone());
                 Ok(Applied {
                     inverse: Self::SetControls { controls: old },

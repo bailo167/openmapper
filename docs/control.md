@@ -75,3 +75,19 @@ map a CC or note on a channel (optionally a specific port) to a parameter
 (0–127 scaled to its range; bools on at ≥ 64), to GO, or to a specific cue
 (triggers on the rising edge). MIDI learn: choose a target, move a control.
 Bindings are saved in the project.
+
+## DMX input (Art-Net / sACN)
+
+Off by default (`controls.dmx_input.enabled`). When on, OpenMapper listens on
+UDP 6454 (Art-Net) and 5568 (sACN, joining the multicast group of every
+bound universe; unicast also works). A binding maps a channel of a universe
+(the Art-Net port address or sACN universe number) to a parameter (full
+range scaled to its range; bools on at ≥ 50 %), to GO, or to a specific cue
+(fires when the value rises through 50 %, never when a universe is first
+seen). A binding can be 16-bit: the channel is the coarse byte and the next
+channel the fine byte. Messages are produced only when a value changes, so a
+console's 40 Hz refresh does not flood the undo history. DMX learn: choose a
+target, move a fader by at least 8 steps. The newest packet for a universe
+wins: sources are not merged and sACN priority is not arbitrated. Do not
+bind a universe that this machine also sends, or output feeds back into
+control.

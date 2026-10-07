@@ -300,3 +300,40 @@ fn unreachable_destinations_count_errors_without_stopping() {
     assert!(s.packets + s.errors > 0, "{s:?}");
     assert_eq!(s.universes, 1);
 }
+
+#[test]
+fn input_receives_artnet_and_sacn_and_skips_junk() {
+    let mut inputs = om_dmx::input::DmxInputs::open(Ports { artnet: 0, sacn: 0 }, &[7]);
+    let (a, s) = (inputs.artnet_port().unwrap(), inputs.sacn_port().unwrap());
+    assert!(inputs.status().contains(&format!("Art-Net :{a}")));
+    let tx = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let source = sacn::Source {
+        cid: [9; 16],
+        name: "test".into(),
+    };
+    tx.send_to(
+        &om_dmx::artnet::dmx(3, 1, 0, &[10, 20, 30]),
+        ("127.0.0.1", a),
+    )
+    .unwrap();
+    tx.send_to(b"not dmx at all", ("127.0.0.1", a)).unwrap();
+    tx.send_to(
+        &sacn::data_packet(&source, 7, 100, 1, 0, &[200; 4]),
+        ("127.0.0.1", s),
+    )
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut got = Vec::new();
+    while got.len() < 2 && Instant::now() < deadline {
+        got.extend(inputs.drain());
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    got.sort_by_key(|r| r.universe);
+    assert_eq!(got.len(), 2, "{got:?}");
+    assert_eq!((got[0].protocol, got[0].universe), ("art-net", 3));
+    assert_eq!(&got[0].data[..3], &[10, 20, 30]);
+    assert_eq!((got[1].protocol, got[1].universe), ("sacn", 7));
+    assert_eq!(&got[1].data[..4], &[200; 4]);
+    inputs.set_universes(&[]);
+    assert!(inputs.drain().is_empty());
+}
