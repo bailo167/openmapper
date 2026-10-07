@@ -387,3 +387,126 @@ fn per_frame_uploads_reuse_textures() {
             .all(|p| p[0] == 255)
     );
 }
+
+#[test]
+fn ellipse_line_and_mesh_match_reference() {
+    let Some(g) = gpu() else { return };
+    let mut c = Compositor::new(g);
+    let fx = Fixture::new((96, 96));
+    let ellipse = Shape::Ellipse {
+        corners: [p(0.05, 0.1), p(0.45, 0.05), p(0.5, 0.55), p(0.02, 0.5)],
+        uv: Point2::unit_square(),
+    };
+    let line = Shape::Line {
+        ends: [p(0.1, 0.8), p(0.9, 0.65)],
+        width: om_types::Finite::new(0.08).unwrap(),
+        uv: Point2::unit_square(),
+    };
+    // A 3x2 mesh with interior points pushed around (still unfolded).
+    let mut mesh = Shape::Quad {
+        corners: [p(0.55, 0.08), p(0.95, 0.12), p(0.97, 0.55), p(0.52, 0.5)],
+        uv: Point2::unit_square(),
+    }
+    .to_mesh(3, 2)
+    .unwrap();
+    if let Shape::Mesh { points, .. } = &mut mesh {
+        points[5] = p(points[5].x() + 0.03, points[5].y() - 0.04);
+        points[6] = p(points[6].x() - 0.02, points[6].y() + 0.05);
+    }
+    let pr = project(
+        150,
+        120,
+        vec![
+            surface(1, ellipse, GRID),
+            surface(2, line, GRID),
+            surface(3, mesh, GRID),
+        ],
+    );
+    let out = fx.gpu_render(&mut c, &pr);
+    let cpu = fx.cpu_render(&pr);
+    assert!(cpu.plan.skipped.is_empty(), "{:?}", cpu.plan.skipped);
+    assert_eq!(
+        cpu.plan.items.len(),
+        1 + 1 + 6,
+        "mesh draws one item per cell"
+    );
+    assert_matches_reference(&out, &cpu, "ellipse+line+mesh", SHARP);
+}
+
+/// Mesh cells are bilinear (seamless across cells); on a parallelogram
+/// bilinear and perspective mappings coincide, so a mesh built from a
+/// parallelogram quad must render exactly like the quad.
+#[test]
+fn mesh_from_parallelogram_renders_like_the_quad() {
+    let Some(g) = gpu() else { return };
+    let mut c = Compositor::new(g);
+    let fx = Fixture::new((80, 60));
+    let quad = Shape::Quad {
+        corners: [p(0.1, 0.12), p(0.8, 0.2), p(0.9, 0.9), p(0.2, 0.82)],
+        uv: Point2::unit_square(),
+    };
+    let mesh = quad.to_mesh(4, 3).unwrap();
+    let quad_project = project(120, 90, vec![surface(1, quad, GRID)]);
+    let a = fx.gpu_render(&mut c, &quad_project);
+    let b = fx.gpu_render(&mut c, &project(120, 90, vec![surface(1, mesh, GRID)]));
+    // Interior (including every internal cell seam) must match; pixels whose
+    // centres lie on the outer outline may flip (the 1-px edge tier).
+    let cpu = fx.cpu_render(&quad_project);
+    let outer_edge = edge_mask(&cpu.coverage, 120, 90, 1);
+    let s = diff(&a, &b, |i| !outer_edge[i]);
+    eprintln!("quad vs mesh (interior): {s:?}");
+    assert!(
+        s.max <= 1,
+        "mesh from a parallelogram must equal its quad: {s:?}"
+    );
+}
+
+#[test]
+fn blend_modes_match_reference() {
+    let Some(g) = gpu() else { return };
+    let mut c = Compositor::new(g);
+    let fx = Fixture::new((64, 64));
+    for blend in [
+        om_project::BlendMode::Normal,
+        om_project::BlendMode::Add,
+        om_project::BlendMode::Screen,
+        om_project::BlendMode::Multiply,
+    ] {
+        let mut top = surface(2, Shape::centred_quad(), GRID);
+        top.blend = blend;
+        top.opacity = UnitInterval::new(0.7).unwrap();
+        // Rotate the top layer's UVs so it differs from the bottom.
+        top.shape = Shape::Quad {
+            corners: [p(0.2, 0.2), p(0.8, 0.2), p(0.8, 0.8), p(0.2, 0.8)],
+            uv: [p(1.0, 0.0), p(1.0, 1.0), p(0.0, 1.0), p(0.0, 0.0)],
+        };
+        let pr = project(64, 64, vec![surface(1, Shape::full_quad(), GRID), top]);
+        let out = fx.gpu_render(&mut c, &pr);
+        assert_matches_reference(&out, &fx.cpu_render(&pr), &format!("{blend:?}"), SHARP);
+    }
+}
+
+#[test]
+fn folded_mesh_cells_are_reported_and_skipped() {
+    let Some(g) = gpu() else { return };
+    let mut c = Compositor::new(g);
+    let fx = Fixture::new((8, 8));
+    let mut mesh = Shape::full_quad().to_mesh(2, 1).unwrap();
+    if let Shape::Mesh { points, .. } = &mut mesh {
+        points[1] = p(1.2, 0.0); // fold the top middle point past the right edge
+    }
+    let pr = project(16, 16, vec![surface(1, mesh, WHITE)]);
+    for (id, img) in &fx.images {
+        c.set_image(*id, img).unwrap();
+    }
+    let report = c.render(&pr).unwrap();
+    assert!(
+        matches!(
+            report.plan.skipped[..],
+            [(_, SkipReason::PartlyUnmappable { skipped_cells: 1 })]
+        ),
+        "{:?}",
+        report.plan.skipped
+    );
+    assert_eq!(report.plan.items.len(), 1);
+}

@@ -133,3 +133,15 @@ passes.
 
 Dev profile keeps line tables only, and no debug info for dependencies
 (target dir 13 GB → 1.9 GB on the dev machine, which was nearly out of disk).
+
+## D-017 — Mesh cells are bilinear; quads stay perspective (2026-10-07)
+
+Quads, triangles, lines and ellipses use exact perspective (homography)
+mapping. Mesh cells use **bilinear** mapping (inverse-bilinear per pixel):
+per-cell perspective maps disagree along shared edges and show texture seams,
+while bilinear maps are linear on every edge and therefore seamless.
+"Convert to mesh" samples the quad's perspective at the grid points, so a
+fine mesh closely follows the original perspective. The inverse uses the
+numerically stable quadratic form; the naive form dropped pixels on
+near-parallelogram cells. Blend modes are fixed-function on premultiplied
+linear colour; Multiply is exact over opaque backgrounds.

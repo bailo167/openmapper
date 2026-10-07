@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use om_project::{Canvas, DisplayTarget, Media, Output, Playback, Project, Shape, Surface};
+use om_project::{
+    BlendMode, Canvas, DisplayTarget, Media, Output, Playback, Project, Shape, Surface,
+};
 use om_types::{MediaId, OutputId, SurfaceId, UnitInterval};
 use serde::{Deserialize, Serialize};
 
@@ -41,6 +43,10 @@ pub enum Command {
     SetSurfaceShape {
         id: SurfaceId,
         shape: Shape,
+    },
+    SetSurfaceBlend {
+        id: SurfaceId,
+        blend: BlendMode,
     },
     /// Assigns (`Some`) or clears (`None`) a surface's media.
     SetSurfaceMedia {
@@ -277,11 +283,23 @@ impl Command {
             }
             Self::SetSurfaceShape { id, shape } => {
                 let at = surface_index(project, *id)?;
-                let old = std::mem::replace(&mut project.surfaces[at].shape, *shape);
+                shape.validate().map_err(CommandError::Invalid)?;
+                let old = std::mem::replace(&mut project.surfaces[at].shape, shape.clone());
                 Ok(Applied {
                     inverse: Self::SetSurfaceShape {
                         id: *id,
                         shape: old,
+                    },
+                    events: vec![Event::SurfaceChanged { id: *id }],
+                })
+            }
+            Self::SetSurfaceBlend { id, blend } => {
+                let at = surface_index(project, *id)?;
+                let old = std::mem::replace(&mut project.surfaces[at].blend, *blend);
+                Ok(Applied {
+                    inverse: Self::SetSurfaceBlend {
+                        id: *id,
+                        blend: old,
                     },
                     events: vec![Event::SurfaceChanged { id: *id }],
                 })
@@ -441,6 +459,7 @@ impl Command {
             Self::UpdateSurface { .. } => "Edit Surface",
             Self::MoveSurface { .. } => "Reorder Surfaces",
             Self::SetSurfaceShape { .. } => "Edit Shape",
+            Self::SetSurfaceBlend { .. } => "Blend Mode",
             Self::SetSurfaceMedia { .. } => "Assign Media",
             Self::AddMedia { .. } => "Add Media",
             Self::SetMediaPlayback { .. } => "Playback Settings",

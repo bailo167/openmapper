@@ -16,11 +16,13 @@ use std::sync::Arc;
 use om_engine::{OpenReport, Session, Transport, path_for_storage};
 use om_media_core::{AudioOpener, VideoOpener};
 use om_output::Display;
-use om_project::{Canvas, Media, MediaSource, Output, PatternKind, Playback, Shape, Surface};
+use om_project::{
+    BlendMode, Canvas, Media, MediaSource, Output, PatternKind, Playback, Shape, Surface,
+};
 use om_time::{Rate, RationalTime, Speed};
 use om_types::{MediaId, OutputId, SurfaceId, UnitInterval};
 
-use crate::canvas::{Drag, begin_drag, dragged_shape, fit_rect, to_screen};
+use crate::canvas::{Drag, begin_drag, dragged_shape, fit_rect, screen_outline, to_screen};
 use crate::gpu::Viewer;
 
 /// How often to re-enumerate displays and retry missing media.
@@ -324,6 +326,8 @@ impl OpenMapperApp {
             for (label, shape) in [
                 ("+ Quad", Shape::centred_quad()),
                 ("+ Triangle", Shape::centred_triangle()),
+                ("+ Ellipse", Shape::centred_ellipse()),
+                ("+ Line", Shape::centred_line()),
             ] {
                 if ui.small_button(label).clicked() {
                     let n = self.session.project().surfaces.len() + 1;
@@ -718,8 +722,10 @@ impl OpenMapperApp {
         ui.horizontal(|ui| {
             if ui.button("Reset shape").clicked() {
                 let shape = match surface.shape {
-                    Shape::Quad { .. } => Shape::centred_quad(),
+                    Shape::Quad { .. } | Shape::Mesh { .. } => Shape::centred_quad(),
                     Shape::Triangle { .. } => Shape::centred_triangle(),
+                    Shape::Ellipse { .. } => Shape::centred_ellipse(),
+                    Shape::Line { .. } => Shape::centred_line(),
                 };
                 self.queue(Command::SetSurfaceShape { id, shape });
             }
@@ -730,7 +736,59 @@ impl OpenMapperApp {
                 });
             }
         });
-        ui.weak("Drag corners on the canvas; drag inside to move.");
+        if matches!(surface.shape, Shape::Quad { .. }) {
+            ui.horizontal(|ui| {
+                ui.label("Convert to mesh:");
+                for n in [2u16, 4, 8] {
+                    if ui.small_button(format!("{n}×{n}")).clicked()
+                        && let Some(shape) = surface.shape.to_mesh(n, n)
+                    {
+                        self.queue(Command::SetSurfaceShape { id, shape });
+                    }
+                }
+            });
+        }
+        if let Shape::Line { ends, width, uv } = &surface.shape {
+            let mut w = width.get() * 100.0;
+            let resp = ui.add(egui::Slider::new(&mut w, 0.1..=25.0).text("Width % of height"));
+            if resp.changed()
+                && let Ok(width) = om_types::Finite::new(w / 100.0)
+            {
+                self.queue_coalescing(
+                    Command::SetSurfaceShape {
+                        id,
+                        shape: Shape::Line {
+                            ends: *ends,
+                            width,
+                            uv: *uv,
+                        },
+                    },
+                    format!("width:{id}"),
+                );
+            }
+            if resp.drag_stopped() || resp.lost_focus() {
+                self.end_coalescing = true;
+            }
+        }
+        egui::ComboBox::from_label("Blend")
+            .selected_text(format!("{:?}", surface.blend))
+            .show_ui(ui, |ui| {
+                for b in [
+                    BlendMode::Normal,
+                    BlendMode::Add,
+                    BlendMode::Screen,
+                    BlendMode::Multiply,
+                ] {
+                    if ui
+                        .selectable_label(surface.blend == b, format!("{b:?}"))
+                        .clicked()
+                    {
+                        self.pending
+                            .push((Command::SetSurfaceBlend { id, blend: b }, None));
+                    }
+                }
+            });
+        ui.weak("Drag points on the canvas; drag inside to move.");
 
         ui.add_space(12.0);
         if ui.button("Remove surface").clicked() {
@@ -796,16 +854,21 @@ impl OpenMapperApp {
                 .iter()
                 .map(|c| to_screen(rect, *c))
                 .collect();
+            let outline = screen_outline(rect, &s.shape);
             let selected = self.selected == Some(s.id);
             let colour = if selected {
                 Color32::from_rgb(255, 200, 40)
             } else {
                 Color32::from_white_alpha(90)
             };
-            painter.add(egui::Shape::closed_line(
-                pts.clone(),
-                Stroke::new(if selected { 1.5 } else { 1.0 }, colour),
-            ));
+            let stroke = Stroke::new(if selected { 1.5 } else { 1.0 }, colour);
+            painter.add(egui::Shape::closed_line(outline, stroke));
+            draw_shape_guides(
+                &painter,
+                rect,
+                &s.shape,
+                Stroke::new(1.0, colour.gamma_multiply(0.6)),
+            );
             if selected {
                 for (i, p) in pts.iter().enumerate() {
                     painter.circle(
@@ -838,9 +901,9 @@ impl OpenMapperApp {
         {
             self.selected = begin_drag(project, rect, self.selected, pos).map(|d| d.surface);
         }
-        if let (Some(drag), Some(pos)) = (self.drag, response.interact_pointer_pos())
+        if let (Some(drag), Some(pos)) = (self.drag.clone(), response.interact_pointer_pos())
             && response.dragged()
-            && let Some(current) = project.surface(drag.surface).map(|s| s.shape)
+            && let Some(current) = project.surface(drag.surface).map(|s| s.shape.clone())
             && let Some(shape) = dragged_shape(rect, &current, &drag, pos)
             && shape != current
         {
@@ -933,6 +996,42 @@ impl OpenMapperApp {
                 }
             }
         });
+    }
+}
+
+/// Extra guides: mesh grid lines and the inscribed ellipse.
+fn draw_shape_guides(painter: &egui::Painter, rect: egui::Rect, shape: &Shape, stroke: Stroke) {
+    match shape {
+        Shape::Mesh {
+            columns,
+            rows,
+            points,
+            ..
+        } => {
+            let (c, r) = (usize::from(*columns), usize::from(*rows));
+            let at = |i: usize, j: usize| points.get(j * (c + 1) + i).map(|p| to_screen(rect, *p));
+            for j in 1..r {
+                let row: Vec<Pos2> = (0..=c).filter_map(|i| at(i, j)).collect();
+                painter.add(egui::Shape::line(row, stroke));
+            }
+            for i in 1..c {
+                let col: Vec<Pos2> = (0..=r).filter_map(|j| at(i, j)).collect();
+                painter.add(egui::Shape::line(col, stroke));
+            }
+        }
+        Shape::Ellipse { corners, .. } => {
+            if let Ok(h) = om_geom::Homography::square_to_quad(corners) {
+                let pts: Vec<Pos2> = (0..64)
+                    .filter_map(|k| {
+                        let a = f64::from(k) / 64.0 * std::f64::consts::TAU;
+                        let (x, y) = h.apply((0.5 + 0.5 * a.cos(), 0.5 + 0.5 * a.sin()))?;
+                        om_geom::Point2::new(x, y).ok().map(|p| to_screen(rect, p))
+                    })
+                    .collect();
+                painter.add(egui::Shape::closed_line(pts, stroke));
+            }
+        }
+        _ => {}
     }
 }
 

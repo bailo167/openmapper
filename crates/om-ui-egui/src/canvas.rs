@@ -11,7 +11,7 @@ use om_types::SurfaceId;
 pub const HANDLE_RADIUS: f32 = 9.0;
 
 /// What a drag is moving.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum DragKind {
     Corner(usize),
     /// Moving the whole surface; `origin` is the shape when the drag began.
@@ -22,7 +22,7 @@ pub enum DragKind {
 }
 
 /// An in-progress drag.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Drag {
     pub surface: SurfaceId,
     pub kind: DragKind,
@@ -68,15 +68,26 @@ pub fn corner_at(rect: Rect, shape: &Shape, pos: Pos2) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
-/// Even-odd point-in-polygon in screen space (handles any shape the user
-/// drags into, including concave ones).
+/// Canvas aspect ratio of the on-screen canvas rect.
+fn aspect(rect: Rect) -> f64 {
+    f64::from(rect.width() / rect.height().max(1.0))
+}
+
+/// The shape's boundary in screen space.
 #[must_use]
-pub fn polygon_contains(rect: Rect, shape: &Shape, pos: Pos2) -> bool {
-    let pts: Vec<Pos2> = shape
-        .corners()
+pub fn screen_outline(rect: Rect, shape: &Shape) -> Vec<Pos2> {
+    shape
+        .outline(aspect(rect))
         .iter()
         .map(|c| to_screen(rect, *c))
-        .collect();
+        .collect()
+}
+
+/// Even-odd point-in-polygon on the shape's outline in screen space
+/// (handles any shape the user drags into, including concave ones).
+#[must_use]
+pub fn polygon_contains(rect: Rect, shape: &Shape, pos: Pos2) -> bool {
+    let pts = screen_outline(rect, shape);
     let mut inside = false;
     let n = pts.len();
     for i in 0..n {
@@ -116,7 +127,7 @@ pub fn begin_drag(
         .map(|s| Drag {
             surface: s.id,
             kind: DragKind::Body {
-                origin: s.shape,
+                origin: s.shape.clone(),
                 start: pos,
             },
         })
@@ -125,11 +136,11 @@ pub fn begin_drag(
 /// The shape a drag produces with the pointer at `pos`.
 #[must_use]
 pub fn dragged_shape(rect: Rect, current: &Shape, drag: &Drag, pos: Pos2) -> Option<Shape> {
-    match drag.kind {
-        DragKind::Corner(i) => Some(current.with_corner(i, to_canvas(rect, pos)?)),
+    match &drag.kind {
+        DragKind::Corner(i) => Some(current.clone().with_corner(*i, to_canvas(rect, pos)?)),
         DragKind::Body { origin, start } => {
-            let d = pos - start;
-            origin.translated(
+            let d = pos - *start;
+            origin.clone().translated(
                 f64::from(d.x / rect.width()),
                 f64::from(d.y / rect.height()),
             )

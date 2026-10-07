@@ -20,4 +20,4 @@ pub mod reference;
 
 pub use colour::{linear_to_srgb, linear_to_srgb8, srgb_to_linear};
 pub use compositor::{Compositor, FrameReport, RenderError, ResourceCounts};
-pub use plan::{DrawItem, RenderPlan, SkipReason, plan};
+pub use plan::{Clip, DrawItem, Mapping, RenderPlan, SkipReason, plan};

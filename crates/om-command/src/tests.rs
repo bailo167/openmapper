@@ -164,9 +164,32 @@ fn arb_shape() -> impl Strategy<Value = Shape> {
             corners,
             uv: Point2::unit_square()
         }),
-        proptest::array::uniform3(pt).prop_map(|corners| Shape::Triangle {
+        proptest::array::uniform3(pt.clone()).prop_map(|corners| Shape::Triangle {
             corners,
             uv: Point2::unit_triangle()
+        }),
+        proptest::array::uniform4(pt.clone()).prop_map(|corners| Shape::Ellipse {
+            corners,
+            uv: Point2::unit_square()
+        }),
+        (
+            1u16..4,
+            1u16..4,
+            proptest::collection::vec(pt.clone(), 0..30)
+        )
+            .prop_map(|(columns, rows, points)| {
+                // Sometimes the wrong point count, which must be rejected.
+                Shape::Mesh {
+                    columns,
+                    rows,
+                    points,
+                    uv: Point2::unit_square(),
+                }
+            }),
+        (proptest::array::uniform2(pt), 0.0f64..0.1).prop_map(|(ends, w)| Shape::Line {
+            ends,
+            width: om_types::Finite::new(w).unwrap(),
+            uv: Point2::unit_square()
         }),
     ]
 }
@@ -177,6 +200,16 @@ fn arb_new_command() -> impl Strategy<Value = Command> {
     let oid = (1u128..3).prop_map(OutputId::from_u128);
     prop_oneof![
         (sid_s.clone(), arb_shape()).prop_map(|(id, shape)| Command::SetSurfaceShape { id, shape }),
+        (
+            sid_s.clone(),
+            proptest::sample::select(vec![
+                om_project::BlendMode::Normal,
+                om_project::BlendMode::Add,
+                om_project::BlendMode::Screen,
+                om_project::BlendMode::Multiply,
+            ])
+        )
+            .prop_map(|(id, blend)| Command::SetSurfaceBlend { id, blend }),
         (sid_s, proptest::option::of(mid.clone()))
             .prop_map(|(id, media)| Command::SetSurfaceMedia { id, media }),
         (mid.clone(), proptest::option::of(0usize..4)).prop_map(|(id, index)| Command::AddMedia {

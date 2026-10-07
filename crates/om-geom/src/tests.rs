@@ -134,3 +134,34 @@ proptest! {
         prop_assert!(convex_contains(&quad, q));
     }
 }
+
+#[test]
+fn inverse_bilinear_round_trips_and_rejects_outside() {
+    let q = [(0.1, 0.1), (0.9, 0.2), (0.8, 0.95), (0.05, 0.8)];
+    for (s, t) in [(0.0, 0.0), (1.0, 1.0), (0.3, 0.7), (0.5, 0.5), (0.99, 0.01)] {
+        let p = bilinear(&q, s, t);
+        let (s2, t2) = inverse_bilinear(&q, p).unwrap();
+        assert!(
+            (s - s2).abs() < 1e-9 && (t - t2).abs() < 1e-9,
+            "{s},{t} -> {s2},{t2}"
+        );
+    }
+    assert!(inverse_bilinear(&q, (0.0, 0.0)).is_none());
+    // Parallelogram (k2 = 0) branch.
+    let par = [(0.0, 0.0), (1.0, 0.0), (1.5, 1.0), (0.5, 1.0)];
+    let p = bilinear(&par, 0.25, 0.5);
+    let (s, t) = inverse_bilinear(&par, p).unwrap();
+    assert!((s - 0.25).abs() < 1e-12 && (t - 0.5).abs() < 1e-12);
+}
+
+proptest! {
+    #[test]
+    fn shared_edges_agree_between_patches(t in 0.0..1.0f64) {
+        // Two patches sharing the edge (b, c): the edge maps identically.
+        let left = [(0.0, 0.0), (0.5, 0.1), (0.55, 0.9), (0.0, 1.0)];
+        let right = [(0.5, 0.1), (1.0, 0.0), (1.0, 1.0), (0.55, 0.9)];
+        let a = bilinear(&left, 1.0, t);
+        let b = bilinear(&right, 0.0, t);
+        prop_assert!((a.0 - b.0).abs() < 1e-15 && (a.1 - b.1).abs() < 1e-15);
+    }
+}

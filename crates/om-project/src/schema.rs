@@ -176,6 +176,8 @@ pub struct Surface {
     pub opacity: UnitInterval,
     #[serde(default)]
     pub shape: Shape,
+    #[serde(default)]
+    pub blend: BlendMode,
     /// Media shown on this surface; `None` renders nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media: Option<MediaId>,
@@ -192,6 +194,7 @@ impl Surface {
             enabled: true,
             opacity: UnitInterval::ONE,
             shape: Shape::default(),
+            blend: BlendMode::Normal,
             media: None,
             extensions: Extensions::new(),
         }
@@ -202,7 +205,7 @@ impl Surface {
 /// points in the media (see `om_geom` for conventions). Any finite corners
 /// may be stored; shapes that cannot be mapped (concave, degenerate) render
 /// nothing and are reported by the renderer.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Shape {
     Quad {
@@ -213,6 +216,46 @@ pub enum Shape {
         corners: [Point2; 3],
         uv: [Point2; 3],
     },
+    /// The ellipse inscribed in a (possibly perspective) quad: the media is
+    /// mapped as for `Quad`, then clipped to the inscribed ellipse.
+    Ellipse {
+        corners: [Point2; 4],
+        uv: [Point2; 4],
+    },
+    /// A `columns × rows` grid warp. `points` holds `(columns + 1) × (rows +
+    /// 1)` control points row-major from the top-left; each cell maps its
+    /// share of the `uv` quad with its own perspective map.
+    Mesh {
+        columns: u16,
+        rows: u16,
+        points: Vec<Point2>,
+        uv: [Point2; 4],
+    },
+    /// A straight stroke between two points. `width` is a fraction of the
+    /// canvas height; the media maps along the stroke (u) and across it (v).
+    Line {
+        ends: [Point2; 2],
+        width: Finite,
+        uv: [Point2; 4],
+    },
+}
+
+/// Largest mesh subdivision per axis.
+pub const MAX_MESH_DIVISIONS: u16 = 32;
+
+/// How a surface combines with what is beneath it (premultiplied, linear).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlendMode {
+    /// `src + dst × (1 − αs)`
+    #[default]
+    Normal,
+    /// `src + dst`
+    Add,
+    /// `src + dst × (1 − src)` per channel
+    Screen,
+    /// `src × dst + dst × (1 − αs)` (exact over opaque backgrounds)
+    Multiply,
 }
 
 fn pt(x: f64, y: f64) -> Point2 {
@@ -247,6 +290,25 @@ impl Shape {
         }
     }
 
+    /// A centred ellipse (circle on a square canvas).
+    #[must_use]
+    pub fn centred_ellipse() -> Self {
+        Self::Ellipse {
+            corners: [pt(0.3, 0.3), pt(0.7, 0.3), pt(0.7, 0.7), pt(0.3, 0.7)],
+            uv: Point2::unit_square(),
+        }
+    }
+
+    /// A horizontal line across the middle of the canvas.
+    #[must_use]
+    pub fn centred_line() -> Self {
+        Self::Line {
+            ends: [pt(0.2, 0.5), pt(0.8, 0.5)],
+            width: Finite::new(0.02).unwrap_or(Finite::ZERO),
+            uv: Point2::unit_square(),
+        }
+    }
+
     /// A centred triangle mapping the top-left half of the media.
     #[must_use]
     pub fn centred_triangle() -> Self {
@@ -256,46 +318,164 @@ impl Shape {
         }
     }
 
+    /// Editable control points (quad/ellipse corners, triangle corners,
+    /// mesh points, line ends).
     #[must_use]
     pub fn corners(&self) -> &[Point2] {
         match self {
-            Self::Quad { corners, .. } => corners,
+            Self::Quad { corners, .. } | Self::Ellipse { corners, .. } => corners,
             Self::Triangle { corners, .. } => corners,
+            Self::Mesh { points, .. } => points,
+            Self::Line { ends, .. } => ends,
         }
     }
 
-    /// Returns a copy with corner `index` moved to `to` (no-op if out of range).
+    fn corners_mut(&mut self) -> &mut [Point2] {
+        match self {
+            Self::Quad { corners, .. } | Self::Ellipse { corners, .. } => corners,
+            Self::Triangle { corners, .. } => corners,
+            Self::Mesh { points, .. } => points,
+            Self::Line { ends, .. } => ends,
+        }
+    }
+
+    /// Returns a copy with control point `index` moved to `to` (no-op if out
+    /// of range).
     #[must_use]
     pub fn with_corner(mut self, index: usize, to: Point2) -> Self {
-        match &mut self {
-            Self::Quad { corners, .. } => {
-                if let Some(c) = corners.get_mut(index) {
-                    *c = to;
-                }
-            }
-            Self::Triangle { corners, .. } => {
-                if let Some(c) = corners.get_mut(index) {
-                    *c = to;
-                }
-            }
+        if let Some(c) = self.corners_mut().get_mut(index) {
+            *c = to;
         }
         self
     }
 
-    /// Returns a copy with all corners translated by `(dx, dy)`, or `None`
-    /// if a result would be non-finite.
+    /// Returns a copy with all control points translated by `(dx, dy)`, or
+    /// `None` if a result would be non-finite.
     #[must_use]
     pub fn translated(mut self, dx: f64, dy: f64) -> Option<Self> {
-        let mv = |c: &mut Point2| -> Option<()> {
+        for c in self.corners_mut() {
             *c = Point2::new(c.x() + dx, c.y() + dy).ok()?;
-            Some(())
-        };
-        match &mut self {
-            Self::Quad { corners, .. } => corners.iter_mut().try_for_each(mv)?,
-            Self::Triangle { corners, .. } => corners.iter_mut().try_for_each(mv)?,
         }
         Some(self)
     }
+
+    /// Boundary polygon in canvas space for hit testing and outlines.
+    /// `aspect` is canvas width / height (lines are sized by height).
+    #[must_use]
+    pub fn outline(&self, aspect: f64) -> Vec<Point2> {
+        match self {
+            Self::Quad { corners, .. } | Self::Ellipse { corners, .. } => corners.to_vec(),
+            Self::Triangle { corners, .. } => corners.to_vec(),
+            Self::Mesh {
+                columns,
+                rows,
+                points,
+                ..
+            } => {
+                let (c, r) = (usize::from(*columns), usize::from(*rows));
+                let at = |i: usize, j: usize| points.get(j * (c + 1) + i).copied();
+                let mut out = Vec::new();
+                out.extend((0..=c).filter_map(|i| at(i, 0)));
+                out.extend((1..=r).filter_map(|j| at(c, j)));
+                out.extend((0..c).rev().filter_map(|i| at(i, r)));
+                out.extend((1..r).rev().filter_map(|j| at(0, j)));
+                out
+            }
+            Self::Line { ends, width, .. } => line_quad(ends, width.get(), aspect).to_vec(),
+        }
+    }
+
+    /// A rows × columns mesh following this quad's perspective (for
+    /// converting a quad into a warpable mesh). `None` for non-quads or a
+    /// quad that cannot be mapped.
+    #[must_use]
+    pub fn to_mesh(&self, columns: u16, rows: u16) -> Option<Self> {
+        let Self::Quad { corners, uv } = self else {
+            return None;
+        };
+        let (columns, rows) = (
+            columns.clamp(1, MAX_MESH_DIVISIONS),
+            rows.clamp(1, MAX_MESH_DIVISIONS),
+        );
+        let h = om_geom::Homography::square_to_quad(corners).ok()?;
+        let mut points = Vec::new();
+        for j in 0..=rows {
+            for i in 0..=columns {
+                let (x, y) = h.apply((
+                    f64::from(i) / f64::from(columns),
+                    f64::from(j) / f64::from(rows),
+                ))?;
+                points.push(Point2::new(x, y).ok()?);
+            }
+        }
+        Some(Self::Mesh {
+            columns,
+            rows,
+            points,
+            uv: *uv,
+        })
+    }
+
+    /// Checks structural invariants (mesh point count, divisions, line width).
+    pub fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Mesh {
+                columns,
+                rows,
+                points,
+                ..
+            } => {
+                if *columns == 0
+                    || *rows == 0
+                    || *columns > MAX_MESH_DIVISIONS
+                    || *rows > MAX_MESH_DIVISIONS
+                {
+                    return Err(format!(
+                        "mesh is {columns}x{rows}; each side must be 1..={MAX_MESH_DIVISIONS}"
+                    ));
+                }
+                let expected = (usize::from(*columns) + 1) * (usize::from(*rows) + 1);
+                if points.len() != expected {
+                    return Err(format!(
+                        "mesh has {} points; {columns}x{rows} needs {expected}",
+                        points.len()
+                    ));
+                }
+                Ok(())
+            }
+            Self::Line { width, .. } if width.get() < 0.0 => Err("line width is negative".into()),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// The quad covered by a line stroke: ends offset by ± half the width,
+/// perpendicular in pixel-proportional space. Order: start-left, end-left,
+/// end-right, start-right (u along the line, v across).
+#[must_use]
+pub fn line_quad(ends: &[Point2; 2], width: f64, aspect: f64) -> [Point2; 4] {
+    let aspect = if aspect.is_finite() && aspect > 0.0 {
+        aspect
+    } else {
+        1.0
+    };
+    let (a, b) = (ends[0].to_tuple(), ends[1].to_tuple());
+    // Work in units of canvas height so the stroke width is isotropic.
+    let (dx, dy) = ((b.0 - a.0) * aspect, b.1 - a.1);
+    let len = (dx * dx + dy * dy).sqrt();
+    let (nx, ny) = if len > 0.0 {
+        (-dy / len, dx / len)
+    } else {
+        (0.0, 0.0)
+    };
+    let (ox, oy) = (nx * width * 0.5 / aspect, ny * width * 0.5);
+    let p = |x: f64, y: f64| Point2::new(x, y).unwrap_or_default();
+    [
+        p(a.0 - ox, a.1 - oy),
+        p(b.0 - ox, b.1 - oy),
+        p(b.0 + ox, b.1 + oy),
+        p(a.0 + ox, a.1 + oy),
+    ]
 }
 
 impl Default for Shape {

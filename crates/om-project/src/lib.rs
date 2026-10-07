@@ -14,8 +14,8 @@ pub mod store;
 
 pub use migrate::{CURRENT_VERSION, FORMAT};
 pub use schema::{
-    Canvas, DisplayTarget, Extensions, Media, MediaSource, Output, PatternKind, Playback, Project,
-    Shape, Show, Surface, Timebase,
+    BlendMode, Canvas, DisplayTarget, Extensions, MAX_MESH_DIVISIONS, Media, MediaSource, Output,
+    PatternKind, Playback, Project, Shape, Show, Surface, Timebase, line_quad,
 };
 
 use std::collections::HashSet;
@@ -119,6 +119,9 @@ impl Project {
             }
             if s.name.trim().is_empty() {
                 return invalid(format!("surface {} has an empty name", s.id));
+            }
+            if let Err(e) = s.shape.validate() {
+                return invalid(format!("surface {}: {e}", s.id));
             }
         }
         let mut media_ids = HashSet::new();

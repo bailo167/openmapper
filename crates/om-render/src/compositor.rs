@@ -10,7 +10,8 @@ use om_project::Project;
 use om_types::MediaId;
 
 use crate::colour::rgba8_srgb_to_linear_premul_f16;
-use crate::plan::{RenderPlan, plan};
+use crate::plan::{Clip, Mapping, RenderPlan, plan};
+use om_project::BlendMode;
 
 /// Rendering failure.
 #[derive(Debug, thiserror::Error)]
@@ -56,6 +57,9 @@ struct ItemUniform {
     c0: [f32; 4],
     c1: [f32; 4],
     c2: [f32; 4],
+    l0: [f32; 4],
+    l1: [f32; 4],
+    l2: [f32; 4],
     params: [f32; 4],
 }
 
@@ -75,7 +79,8 @@ struct Canvas {
 /// Draws projects with the GPU.
 pub struct Compositor {
     gpu: GpuContext,
-    pipeline: wgpu::RenderPipeline,
+    /// One composite pipeline per blend mode.
+    pipelines: HashMap<BlendMode, wgpu::RenderPipeline>,
     item_layout: wgpu::BindGroupLayout,
     media_layout: wgpu::BindGroupLayout,
     blit_layout: wgpu::BindGroupLayout,
@@ -124,46 +129,50 @@ impl Compositor {
             bind_group_layouts: &[Some(&item_layout), Some(&media_layout)],
             immediate_size: 0,
         });
-        let premul_over = wgpu::BlendComponent {
-            src_factor: wgpu::BlendFactor::One,
-            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
-            operation: wgpu::BlendOperation::Add,
+        let make = |blend: BlendMode| {
+            let (color, alpha) = blend_state(blend);
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("om composite"),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some("vs_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: VERTEX_SIZE,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &wgpu::vertex_attr_array![0 => Float32x2],
+                    })],
+                },
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: None, // mirrored surfaces flip winding
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some("fs_main"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: WORKING_FORMAT,
+                        blend: Some(wgpu::BlendState { color, alpha }),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
         };
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("om composite"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &module,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: VERTEX_SIZE,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x2],
-                })],
-            },
-            primitive: wgpu::PrimitiveState {
-                cull_mode: None, // mirrored surfaces flip winding
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &module,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: WORKING_FORMAT,
-                    blend: Some(wgpu::BlendState {
-                        color: premul_over,
-                        alpha: premul_over,
-                    }),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        let pipelines = [
+            BlendMode::Normal,
+            BlendMode::Add,
+            BlendMode::Screen,
+            BlendMode::Multiply,
+        ]
+        .into_iter()
+        .map(|b| (b, make(b)))
+        .collect();
         let blit_layout = texture_layout(device, "om blit");
         let blit_module = device.create_shader_module(wgpu::include_wgsl!("blit.wgsl"));
         let blit_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -184,7 +193,7 @@ impl Compositor {
         let uniform_stride = size.div_ceil(align) * align;
         Self {
             gpu,
-            pipeline,
+            pipelines,
             item_layout,
             media_layout,
             blit_layout,
@@ -320,12 +329,34 @@ impl Compositor {
                 }
             }
             ranges.push(start as u32..(verts.len() / 2) as u32);
-            let [c0, c1, c2] = item.canvas_to_uv.to_gpu_cols();
+            // Mapping kind in params.w: 0 projective, 1 projective + ellipse
+            // clip (l0..l2 = canvas->local), 2 bilinear (c0,c1 = corners,
+            // l0,l1 = UVs, as xy pairs P00 P10 | P11 P01).
+            let (kind, [c0, c1, c2], [l0, l1, l2]) = match (item.mapping, item.clip) {
+                (Mapping::Projective(h), Clip::None) => (0.0, h.to_gpu_cols(), [[0.0; 4]; 3]),
+                (Mapping::Projective(h), Clip::Ellipse { canvas_to_local }) => {
+                    (1.0, h.to_gpu_cols(), canvas_to_local.to_gpu_cols())
+                }
+                (Mapping::Bilinear { corners: q, uv }, _) => {
+                    let f = |a: (f64, f64), b: (f64, f64)| {
+                        [a.0 as f32, a.1 as f32, b.0 as f32, b.1 as f32]
+                    };
+                    (
+                        2.0,
+                        [f(q[0], q[1]), f(q[2], q[3]), [0.0; 4]],
+                        [f(uv[0], uv[1]), f(uv[2], uv[3]), [0.0; 4]],
+                    )
+                }
+            };
+            let clip_kind = kind;
             let u = ItemUniform {
                 c0,
                 c1,
                 c2,
-                params: [item.opacity, size.0 as f32, size.1 as f32, 0.0],
+                l0,
+                l1,
+                l2,
+                params: [item.opacity, size.0 as f32, size.1 as f32, clip_kind],
             };
             let mut block = vec![0u8; self.uniform_stride as usize];
             block[..std::mem::size_of::<ItemUniform>()].copy_from_slice(bytemuck::bytes_of(&u));
@@ -365,9 +396,12 @@ impl Compositor {
                 ..Default::default()
             });
             if let (Some((_, ubind, _)), Some((vbuf, _))) = (&self.uniforms, &self.vertices) {
-                pass.set_pipeline(&self.pipeline);
                 pass.set_vertex_buffer(0, vbuf.slice(..));
                 for (i, (item, range)) in frame_plan.items.iter().zip(&ranges).enumerate() {
+                    let Some(pipeline) = self.pipelines.get(&item.blend) else {
+                        continue;
+                    };
+                    pass.set_pipeline(pipeline);
                     let Some(img) = self.images.get(&item.media) else {
                         continue;
                     };
@@ -633,6 +667,25 @@ impl Compositor {
             })
         })
     }
+}
+
+/// Fixed-function blending for each mode, on premultiplied linear colour.
+/// The CPU reference (`reference::blend`) implements the same equations.
+fn blend_state(mode: BlendMode) -> (wgpu::BlendComponent, wgpu::BlendComponent) {
+    use wgpu::{BlendComponent as C, BlendFactor as F, BlendOperation as Op};
+    let c = |src_factor, dst_factor| C {
+        src_factor,
+        dst_factor,
+        operation: Op::Add,
+    };
+    let alpha_over = c(F::One, F::OneMinusSrcAlpha);
+    let color = match mode {
+        BlendMode::Normal => c(F::One, F::OneMinusSrcAlpha),
+        BlendMode::Add => c(F::One, F::One),
+        BlendMode::Screen => c(F::One, F::OneMinusSrc),
+        BlendMode::Multiply => c(F::Dst, F::OneMinusSrcAlpha),
+    };
+    (color, alpha_over)
 }
 
 fn texture_layout(device: &wgpu::Device, label: &str) -> wgpu::BindGroupLayout {

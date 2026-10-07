@@ -18,7 +18,8 @@ use om_types::MediaId;
 use crate::colour::{
     f16_bytes_to_f32, linear_to_srgb8, quantize_f16, rgba8_srgb_to_linear_premul_f16,
 };
-use crate::plan::{RenderPlan, plan};
+use crate::plan::{Clip, RenderPlan, plan};
+use om_project::BlendMode;
 
 /// A media image converted to the renderer's texel format.
 #[derive(Debug, Clone)]
@@ -106,18 +107,23 @@ pub fn render(project: &Project, images: &HashMap<MediaId, RefImage>) -> RefFram
                 if !convex_contains(&item.polygon_points(), p) {
                     continue;
                 }
-                let Some(uv) = item.canvas_to_uv.apply(p) else {
+                if let Clip::Ellipse { canvas_to_local } = item.clip {
+                    let Some((lx, ly)) = canvas_to_local.apply(p) else {
+                        continue;
+                    };
+                    let (dx, dy) = (lx * 2.0 - 1.0, ly * 2.0 - 1.0);
+                    if dx * dx + dy * dy > 1.0 {
+                        continue;
+                    }
+                }
+                let Some(uv) = item.mapping.apply(p) else {
                     continue;
                 };
                 let s = img.sample(uv);
                 let i = (py * w + px) as usize;
                 coverage[i] = true;
-                let dst = &mut canvas[i];
-                let src_a = s[3] * item.opacity;
-                for k in 0..4 {
-                    let src = s[k] * item.opacity;
-                    dst[k] = quantize_f16(src + dst[k] * (1.0 - src_a));
-                }
+                let src = s.map(|v| v * item.opacity);
+                canvas[i] = blend(item.blend, src, canvas[i]).map(quantize_f16);
             }
         }
     }
@@ -135,6 +141,23 @@ pub fn render(project: &Project, images: &HashMap<MediaId, RefImage>) -> RefFram
         coverage,
         plan: frame_plan,
     }
+}
+
+/// Premultiplied blend equations matching the GPU blend states.
+#[must_use]
+pub fn blend(mode: BlendMode, src: [f32; 4], dst: [f32; 4]) -> [f32; 4] {
+    let a = src[3];
+    let mut out = [0.0; 4];
+    for k in 0..3 {
+        out[k] = match mode {
+            BlendMode::Normal => src[k] + dst[k] * (1.0 - a),
+            BlendMode::Add => src[k] + dst[k],
+            BlendMode::Screen => src[k] + dst[k] * (1.0 - src[k]),
+            BlendMode::Multiply => src[k] * dst[k] + dst[k] * (1.0 - a),
+        };
+    }
+    out[3] = a + dst[3] * (1.0 - a);
+    out
 }
 
 impl crate::plan::DrawItem {
