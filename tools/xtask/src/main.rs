@@ -24,9 +24,10 @@ tasks:
                (--history: every blob in every ref)
   arch         crate layering and forbidden-dependency check
   notices [OUT] third-party licences of the release binaries
-  dist         release build + archive + SHA256SUMS in target/dist
+  dist         release build with the bundled FFmpeg (FFMPEG_DIR, default
+               target/ffmpeg from tools/ffmpeg/build.sh) + archive + SHA256SUMS
   checksums F… SHA-256 lines for files
-  smoke ARCHIVE unpack an archive and exercise the CLI from it";
+  smoke ARCHIVE unpack an archive and exercise the CLI and bundled FFmpeg from it";
 
 fn main() -> ExitCode {
     let task = std::env::args().nth(1).unwrap_or_default();
@@ -46,7 +47,7 @@ fn main() -> ExitCode {
                 || root().join("target/dist/THIRD_PARTY_LICENSES.txt"),
                 PathBuf::from,
             );
-            dist::notices(&root(), &out)
+            dist::notices(&root(), &out, None)
         }
         "dist" => dist::dist(&root()).map(|_| ()),
         "checksums" => {
@@ -54,7 +55,7 @@ fn main() -> ExitCode {
             dist::checksum_lines(&files).map(|s| print!("{s}"))
         }
         "smoke" => match std::env::args().nth(2) {
-            Some(a) => dist::smoke(Path::new(&a)),
+            Some(a) => dist::smoke(&root(), Path::new(&a)),
             None => Err(anyhow::anyhow!("usage: cargo xtask smoke ARCHIVE")),
         },
         _ => {

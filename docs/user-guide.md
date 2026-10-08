@@ -26,11 +26,26 @@ Unpack the archive for your platform anywhere and run `openmapper` (the
 desktop app) or `openmapper-cli` (the command-line tool). Check the archive
 against `SHA256SUMS` from the release page first (`shasum -a 256 -c
 SHA256SUMS` on macOS/Linux, `CertUtil -hashfile <archive> SHA256` on
-Windows).
+Windows). `SHA256SUMS` itself is signed; `docs/release/signing.md` shows
+how to verify the signature with `cosign`.
 
-Video and audio need the FFmpeg shared libraries (LGPL build) on the system;
-`openmapper-cli ffmpeg` shows what was found and its licence profile. NDI
-needs the NDI runtime from ndi.video (see `live-io.md`).
+The binaries are not yet code-signed. On **macOS**, download with `curl`
+or clear quarantine after unpacking (`xattr -dr com.apple.quarantine
+openmapper-*/`), or allow the app under System Settings ▸ Privacy &
+Security ▸ *Open Anyway*. On **Windows**, SmartScreen asks once: *More
+info* ▸ *Run anyway*.
+
+Video and audio play through the FFmpeg libraries included in the archive
+(`lib/`; LGPL — licence, source reference and build recipe in `ffmpeg/`).
+They decode the usual delivery and intermediate formats (H.264, ProRes,
+DNxHD, HAP, MPEG-2/4, VP8/VP9, FFV1, MJPEG; AAC, MP3, FLAC, Opus, PCM) but
+**not HEVC**; `docs/media/ffmpeg.md` lists every format and explains how
+to replace the libraries if you need more. `openmapper-cli ffmpeg` shows
+what is loaded.
+
+NDI needs the NDI runtime from ndi.video (see `live-io.md`). NDI® is a
+registered trademark of Vizrt NDI AB; OpenMapper is not affiliated with
+Vizrt.
 
 ## Projects
 

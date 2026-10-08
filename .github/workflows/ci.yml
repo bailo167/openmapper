@@ -76,52 +76,12 @@ jobs:
       - name: long-running media checks (10 min of video without drift)
         run: cargo test --release --locked -p om-media-ffmpeg --test decode -- --ignored ten_minutes_without_drift
 
-  # Release packaging smoke test: archive + SHA256SUMS per OS, unpacked
-  # and exercised from a fresh directory. On demand only (release builds
-  # are slow); see docs/release/checklist.md.
+  # Release packaging smoke test (package.yml): the bundled LGPL FFmpeg,
+  # archive + SHA256SUMS per OS, unpacked and exercised from a fresh
+  # directory. On demand only (release builds are slow); see
+  # docs/release/checklist.md. Tags run the same job through release.yml.
   package:
-    name: package (${{ matrix.os }})
     if: github.event_name == 'workflow_dispatch'
     needs: gate-a
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: system libraries (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y pkg-config clang libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev libavfilter-dev libavdevice-dev libasound2-dev libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev libxcb1-dev libxcb-randr0-dev
-      - name: FFmpeg (macOS, Homebrew)
-        if: runner.os == 'macOS'
-        run: brew install ffmpeg pkg-config
-      - name: FFmpeg (Windows, LGPL shared build)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $zip = "ffmpeg-n9.0-latest-win64-lgpl-shared-9.0"
-          Invoke-WebRequest "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/$zip.zip" -OutFile ffmpeg.zip
-          Expand-Archive ffmpeg.zip -DestinationPath $env:RUNNER_TEMP
-          $dir = Join-Path $env:RUNNER_TEMP $zip
-          "FFMPEG_DIR=$dir" | Out-File -Append $env:GITHUB_ENV
-          "LIBCLANG_PATH=C:\Program Files\LLVM\bin" | Out-File -Append $env:GITHUB_ENV
-          Join-Path $dir "bin" | Out-File -Append $env:GITHUB_PATH
-      - name: provenance over the full history
-        run: cargo xtask provenance --history
-      - name: build the release archive
-        run: cargo xtask dist
-      - name: smoke-test the unpacked archive
-        shell: bash
-        run: cargo xtask smoke target/dist/openmapper-*.tar.gz
-      - uses: actions/upload-artifact@v4
-        with:
-          name: openmapper-${{ runner.os }}
-          path: |
-            target/dist/*.tar.gz
-            target/dist/SHA256SUMS
-          retention-days: 14
+    uses: ./.github/workflows/package.yml
+    secrets: inherit

@@ -380,3 +380,129 @@ FFmpeg is not bundled; whether to bundle an LGPL build or load FFmpeg at
 run time is a release decision (RELEASE_GAPS.md G-07). The 1.0 verdict is
 NOT READY until the hardware, soak, distribution, signing and legal items
 in RELEASE_GAPS.md are closed.
+
+## D-031 — FFmpeg is bundled: a minimal, self-built LGPL build (2026-10-08)
+
+Delegated by the owner (RELEASE_GAPS.md G-07, "you decide what's best").
+Releases **bundle** FFmpeg shared libraries built by `tools/ffmpeg/build.sh`
+from the component list in `tools/ffmpeg/components.txt`, rather than
+loading FFmpeg at run time or asking users to install it.
+
+Why not run-time loading: `ffmpeg-sys-next` binds FFmpeg's structs and
+functions at build time for one specific FFmpeg version; a dlopen layer would
+mean rewriting the adapter against a hand-maintained ABI, and the binaries
+would still need *some* FFmpeg to play video — a projection mapper that
+cannot play video out of the box is not a 1.0 product. Why not user-installed
+FFmpeg: macOS users' usual source (Homebrew) is a GPL build, Linux
+distributions ship incompatible SONAMEs (6.1 on Ubuntu 24.04, 7.x on Fedora),
+and Windows has no system FFmpeg, so no clean install would work anywhere.
+
+Why a *self-built, minimal* build instead of a third-party LGPL build
+(BtbN): one source archive and one licence to publish instead of a dozen
+external libraries; a reviewable list of exactly which codecs are shipped;
+and a build pinned by git commit (`n9.0.2`,
+`946fcce07b6dcd0331c8cc609192aeff5e1924f8`) rather than a moving
+"latest" download.
+
+Codec policy, chosen because the legal review will not happen (D-033):
+
+- **No GPL or non-free parts, no external libraries** (`--enable-lib*`), so
+  the LGPL compliance story is FFmpeg alone.
+- **Decoders** for the delivery and intermediate codecs shows actually use:
+  H.264, MPEG-4 Part 2, MPEG-1/2, MJPEG, ProRes, DNxHD, CineForm, HAP, FFV1,
+  HuffYUV, Ut Video, raw/v210, VP8/VP9, Theora, QuickTime RLE, DV, H.263,
+  FLV; audio AAC, ALAC, FLAC, MP3, Opus, Vorbis, PCM.
+- **No HEVC, VVC or VC-1 decoders.** HEVC's patent pools have no royalty-free
+  tier and license software decoders; H.264's pool (Via LA) has a
+  royalty-free tier below 100 000 units a year and its core patents are
+  expiring. That is the same line the Chromium project draws for the FFmpeg
+  decoders it ships. Users who need HEVC drop in any ABI-compatible FFmpeg 9
+  build (docs/media/ffmpeg.md) — the libraries are deliberately replaceable.
+- **Encoders only where no patent licensing programme is active**: MPEG-2
+  (patents expired 2018) and FFV1 for publishing (sink.rs), raw video and
+  PCM. No H.264, HEVC, AAC or MPEG-4 Part 2 encoders; the test corpus's
+  MPEG-4/AAC fixtures therefore need a development FFmpeg, not the bundle.
+- AV1 is not shipped (FFmpeg's native decoder needs hardware; software AV1
+  needs libdav1d, an external library). SRT is not shipped (needs libsrt);
+  TCP remains the reliable transport for lossless streams.
+
+Mechanics: `cargo xtask dist` builds against the prefix (`FFMPEG_DIR`), gives
+the executables an rpath to `lib/` (DT_RPATH on Linux so it also covers
+libavcodec → libavutil; `@executable_path/lib` with `@rpath` install names
+on macOS; same directory on Windows), copies the six libraries plus
+`ffmpeg/` (LGPL text, FFmpeg's LICENSE.md, SOURCE.txt with the commit and
+configure line, and the recipe itself), and refuses to archive unless the
+staged `openmapper-cli ffmpeg --require-release` loads the bundled build
+(`--extra-version=openmapper` marker) and passes the policy, which is also
+encoded and tested in `om_media_ffmpeg::policy` against `components.txt`.
+The smoke test then decodes a generated FFV1 clip through the unpacked
+archive into a rendered frame. The complete corresponding source
+(`ffmpeg-n9.0.2-src.tar.gz`) is attached to every release next to the
+archives (LGPL-2.1 §6d). `libavfilter` is no longer linked (unused).
+Development and gate-B CI still use distribution, Homebrew (GPL,
+development only) or BtbN builds.
+
+## D-032 — Signing posture for 1.0 without publisher accounts (2026-10-08)
+
+Delegated by the owner (G-08). No Apple Developer, Windows code-signing or
+long-term signing key exists.
+
+- **Checksums are signed keylessly with Sigstore** from `release.yml`:
+  `cosign sign-blob` with the workflow's GitHub Actions OIDC identity
+  produces `SHA256SUMS.sigstore.json`. There is no private key to generate,
+  store or lose; the signature binds the files to this repository, workflow
+  file and tag, recorded in the public Rekor transparency log (which exposes
+  the repository name — acceptable for a project that is going public). The
+  workflow verifies its own signature the way a user would. A minisign or
+  GPG release key can be added later without changing anything else.
+- **Binary code signing is wired but inactive.** `cargo xtask dist` runs
+  `OM_SIGN_COMMAND` on the staging directory before archiving;
+  `package.yml` enables `.github/scripts/sign-macos.sh` (Developer ID,
+  hardened runtime with the JIT entitlements Wasmtime needs, notarytool) and
+  `sign-windows.ps1` (Authenticode via signtool) only when the corresponding
+  secrets exist. Those scripts are untested until the owner creates the
+  accounts (docs/release/signing.md lists the exact secrets and steps).
+- **Until then the binaries are unsigned**, and the user guide documents the
+  Gatekeeper (`xattr -dr com.apple.quarantine`, or System Settings ▸ Privacy
+  & Security ▸ Open Anyway) and SmartScreen ("More info ▸ Run anyway") steps
+  and the checksum/Sigstore verification that replaces trust in a publisher
+  certificate. Apple Silicon binaries carry the linker's ad-hoc signature,
+  which is required for them to run at all. The macOS executable embeds an
+  Info.plist (bundle identifier, camera/microphone/local-network usage
+  descriptions) so it behaves like a bundled app for privacy prompts and is
+  ready for notarisation. Installers (`.app`/`.dmg`, MSI) remain follow-up
+  work once signing is live (D-030).
+- Releases are created as **drafts** only on a `v*` tag; the owner reviews
+  and publishes. GitHub artifact attestations were not used because they
+  are unavailable on private repositories outside Enterprise; they can be
+  added once the repository is public.
+
+## D-033 — No solicitor review before 1.0; recorded waiver (2026-10-08)
+
+The owner decided that the Australian IP solicitor review of the clean-room
+record, FFmpeg/codec patents, NDI naming and third-party notices (G-10,
+CLEANROOM.md, docs/PLAN.md) **will not be done**. This is the owner's risk
+decision, recorded here and in docs/release/legal-posture.md; nothing in the
+repository claims legal clearance, and the review may still be commissioned
+later.
+
+Risk was reduced where software can reduce it:
+
+- FFmpeg: the narrow, decoder-biased, external-library-free LGPL build of
+  D-031, with source, recipe and licence text in every release.
+- NDI: the name is used descriptively with the required attribution ("NDI®
+  is a registered trademark of Vizrt NDI AB") and a non-affiliation note in
+  NOTICE, the third-party notices file and the user documentation; the
+  runtime is never redistributed (D-022).
+- Clean-room evidence: the full-history provenance scan runs in every
+  package job and its report (`PROVENANCE.txt`) is attached to releases, so
+  the evidence a reviewer would examine is public.
+- Third-party notices stay generated from the dependency graph, never
+  hand-maintained.
+
+Residual risks the owner carries, with the mitigations above: codec patents
+on the shipped decoders; a trademark or SDK-licence objection to the NDI
+naming; a clean-room challenge resting on process rather than counsel's
+opinion; mistakes in LGPL compliance mechanics. The reference-product
+licence agreement is still to be archived by the owner as CLEANROOM.md
+requires (that step needs no solicitor).

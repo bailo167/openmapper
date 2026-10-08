@@ -14,4 +14,4 @@ and `prompts/`.
 | 7 | DMX & LED mapping | done — software **verified** on 3-OS CI (packet goldens, pixel-mapping goldens, compressed 30-min stream); **physical Art-Net/sACN node test awaits hardware** |
 | 8 | Advanced mapping & calibration | **verified** in software (3-OS CI: synthetic calibration bound, blend, structured light); **physical projector/camera calibration awaits hardware** |
 | 9 | Plugins & resilience | **verified** (3-OS CI: hanging plugin terminated, crash injection, N-2 migration, relink) |
-| 10 | Parity audit & production hardening | **active — verdict NOT READY** (RELEASE_GAPS.md): software gaps closed, security review fixed, packaging/notices/provenance tooling in place; blocked on hardware, soak, FFmpeg decision, signing and legal review |
+| 10 | Parity audit & production hardening | **active — verdict NOT READY** (RELEASE_GAPS.md): software gaps closed, security review fixed, packaging with bundled LGPL FFmpeg (D-031), keyless checksum signing (D-032), legal review waived by the owner (D-033); blocked on hardware tests, the reference-system soak and a clean-machine install check |

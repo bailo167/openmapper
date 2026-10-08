@@ -4,16 +4,25 @@
 //!
 //! - `cargo xtask notices [OUT]` — licences of every Rust dependency linked
 //!   into the release binaries, with their licence texts.
-//! - `cargo xtask dist` — release build, then
-//!   `target/dist/openmapper-<version>-<os>-<arch>.tar.gz` (binaries,
-//!   LICENSE, NOTICE, THIRD_PARTY.yml, THIRD_PARTY_LICENSES.txt, user guide)
-//!   and `target/dist/SHA256SUMS`.
+//! - `cargo xtask dist` — release build against the bundled FFmpeg
+//!   (`FFMPEG_DIR`, default `target/ffmpeg`, built by
+//!   `tools/ffmpeg/build.sh`), then
+//!   `target/dist/openmapper-<version>-<os>-<arch>.tar.gz` (binaries, the
+//!   FFmpeg shared libraries with their licence, source notice and build
+//!   recipe, LICENSE, NOTICE, THIRD_PARTY.yml, THIRD_PARTY_LICENSES.txt,
+//!   user guide) and `target/dist/SHA256SUMS`. The staged binaries must
+//!   load the bundled libraries and pass the FFmpeg release policy
+//!   (`openmapper-cli ffmpeg --require-release`, D-031) before the archive
+//!   is written. `OM_SIGN_COMMAND="prog args…"` runs a code-signing command
+//!   on the staging directory (its path is appended) before archiving.
 //! - `cargo xtask checksums FILE…` — SHA-256 lines for any files.
 //! - `cargo xtask smoke ARCHIVE` — unpacks into a fresh directory and runs
-//!   the CLI from there (version, new, validate, apply, inspect).
+//!   the CLI from there (version, new, validate, apply, inspect), checks
+//!   that the bundled FFmpeg is what loads, and decodes and renders a
+//!   generated video when a GPU is available.
 //!
-//! Signing the checksum file needs the release key and is done by a person
-//! (docs/release/checklist.md).
+//! Signing `SHA256SUMS` happens in the release workflow (keyless Sigstore;
+//! docs/release/signing.md).
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -29,6 +38,147 @@ const BINARIES: &[(&str, &str)] = &[
     ("openmapper", "openmapper"),
     ("openmapper-cli", "openmapper-cli"),
 ];
+
+/// FFmpeg shared libraries bundled with every release (D-031), in `lib/`
+/// next to the binaries (Linux, macOS) or beside them (Windows).
+const FFMPEG_LIBS: &[&str] = &[
+    "avutil",
+    "swresample",
+    "swscale",
+    "avcodec",
+    "avformat",
+    "avdevice",
+];
+
+/// Compliance record written by `tools/ffmpeg/build.sh` into the prefix;
+/// shipped as `ffmpeg/` in the archive.
+const FFMPEG_RECORD: &str = "share/openmapper-ffmpeg";
+
+/// Where `tools/ffmpeg/build.sh` installed FFmpeg: `FFMPEG_DIR`, else
+/// `target/ffmpeg`.
+fn ffmpeg_prefix(root: &Path) -> Result<PathBuf> {
+    let dir =
+        std::env::var_os("FFMPEG_DIR").map_or_else(|| root.join("target/ffmpeg"), PathBuf::from);
+    if !dir.join(FFMPEG_RECORD).join("SOURCE.txt").is_file() {
+        bail!(
+            "{} does not contain an FFmpeg built by tools/ffmpeg/build.sh \
+             (run `tools/ffmpeg/build.sh`, or set FFMPEG_DIR to its prefix)",
+            dir.display()
+        );
+    }
+    Ok(dir)
+}
+
+/// The shared-library files (`libavcodec.so.63`, `libavcodec.63.dylib`,
+/// `avcodec-63.dll`) of each bundled library in `prefix`.
+fn ffmpeg_library_files(prefix: &Path) -> Result<Vec<PathBuf>> {
+    let (dir, is_match): (&str, fn(&str, &str) -> bool) = match std::env::consts::OS {
+        "linux" => ("lib", |f, lib| {
+            f.strip_prefix(&format!("lib{lib}.so."))
+                .is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
+        }),
+        "macos" => ("lib", |f, lib| {
+            f.strip_prefix(&format!("lib{lib}."))
+                .and_then(|v| v.strip_suffix(".dylib"))
+                .is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
+        }),
+        "windows" => ("bin", |f, lib| {
+            f.strip_prefix(&format!("{lib}-"))
+                .and_then(|v| v.strip_suffix(".dll"))
+                .is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
+        }),
+        other => bail!("no FFmpeg bundling rule for {other}"),
+    };
+    let entries: Vec<PathBuf> = fs::read_dir(prefix.join(dir))
+        .with_context(|| format!("reading {}", prefix.join(dir).display()))?
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    let mut out = Vec::new();
+    for lib in FFMPEG_LIBS {
+        let found: Vec<&PathBuf> = entries
+            .iter()
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| is_match(n, lib))
+            })
+            .collect();
+        match found.as_slice() {
+            [one] => out.push((*one).clone()),
+            [] => bail!("{lib}: no shared library in {}", prefix.join(dir).display()),
+            many => bail!("{lib}: several candidates: {many:?}"),
+        }
+    }
+    Ok(out)
+}
+
+/// Where the bundled libraries live relative to the binaries.
+fn bundled_lib_dir(top: &Path) -> PathBuf {
+    if cfg!(windows) {
+        top.to_owned()
+    } else {
+        top.join("lib")
+    }
+}
+
+/// Environment for running fixturegen (not shipped, so no rpath) against the
+/// prefix's libraries.
+fn with_prefix_libraries(cmd: &mut Command, prefix: &Path) {
+    let (var, dir) = match std::env::consts::OS {
+        "macos" => ("DYLD_LIBRARY_PATH", prefix.join("lib")),
+        "windows" => ("PATH", prefix.join("bin")),
+        _ => ("LD_LIBRARY_PATH", prefix.join("lib")),
+    };
+    let mut paths = vec![dir];
+    paths.extend(
+        std::env::var_os(var)
+            .map(|v| std::env::split_paths(&v).collect::<Vec<_>>())
+            .unwrap_or_default(),
+    );
+    if let Ok(joined) = std::env::join_paths(paths) {
+        cmd.env(var, joined);
+    }
+}
+
+/// Runs `openmapper-cli ffmpeg --require-release` from `top` with the
+/// library search variables cleared, so only the bundled libraries can
+/// satisfy the binary, and checks that they are the ones built by the
+/// recipe (version marker).
+fn verify_bundled_ffmpeg(top: &Path) -> Result<()> {
+    let cli = top.join(exe("openmapper-cli"));
+    let out = Command::new(&cli)
+        .args(["ffmpeg", "--require-release"])
+        .env_remove("LD_LIBRARY_PATH")
+        .env_remove("DYLD_LIBRARY_PATH")
+        .env_remove("DYLD_FALLBACK_LIBRARY_PATH")
+        .current_dir(top)
+        .output()
+        .with_context(|| format!("running {}", cli.display()))?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    if !out.status.success() {
+        bail!(
+            "bundled FFmpeg failed the release policy ({}):\n{stdout}{}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let version = stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("version:"))
+        .map(str::trim)
+        .unwrap_or_default();
+    if !version.contains("openmapper") {
+        bail!(
+            "the binaries loaded an FFmpeg that is not the bundled build (version {version:?}). \
+             Another FFmpeg's development libraries were on the linker's search path and won \
+             the link; build the distribution on a machine without FFmpeg development packages \
+             (as package.yml does) or remove them first"
+        );
+    }
+    eprintln!("  ffmpeg: {version}, release policy ok");
+    Ok(())
+}
 
 fn exe(name: &str) -> String {
     format!("{name}{}", std::env::consts::EXE_SUFFIX)
@@ -46,6 +196,7 @@ const REFERENCE_DOCS: &[&str] = &[
     "project-format.md",
     "media/ffmpeg.md",
     "media/playback.md",
+    "release/signing.md",
 ];
 
 /// Vendored non-crate sources compiled into the binaries, with their
@@ -119,7 +270,9 @@ fn licence_files(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// Writes the third-party licence file for the release binaries.
-pub fn notices(root: &Path, out: &Path) -> Result<()> {
+/// `ffmpeg_record` is the bundled FFmpeg's compliance folder (SOURCE.txt,
+/// LICENSE.md), when FFmpeg is bundled.
+pub fn notices(root: &Path, out: &Path, ffmpeg_record: Option<&Path>) -> Result<()> {
     let meta = cargo_metadata::MetadataCommand::new()
         .manifest_path(root.join("Cargo.toml"))
         .exec()
@@ -159,8 +312,11 @@ pub fn notices(root: &Path, out: &Path) -> Result<()> {
          OpenMapper is licensed under Apache-2.0 (see LICENSE and NOTICE). The\n\
          binaries also contain the Rust crates listed below, under the licences\n\
          shown, followed by each crate's licence and notice files. Material\n\
-         that is not a Rust crate (vendored sources, FFmpeg and other runtime\n\
-         libraries) is listed in THIRD_PARTY.yml and docs/release/.\n\n",
+         that is not a Rust crate (vendored sources, the bundled FFmpeg shared\n\
+         libraries) follows at the end; see also THIRD_PARTY.yml and ffmpeg/.\n\n\
+         NDI® is a registered trademark of Vizrt NDI AB. OpenMapper is not\n\
+         affiliated with or endorsed by Vizrt; it uses an NDI runtime the user\n\
+         installs separately.\n\n",
     );
     let mut deps: Vec<&cargo_metadata::Package> = seen
         .iter()
@@ -217,6 +373,20 @@ pub fn notices(root: &Path, out: &Path) -> Result<()> {
         let body =
             fs::read_to_string(root.join(file)).with_context(|| format!("reading {file}"))?;
         let _ = writeln!(text, "\n--- {what} ({file}) ---\n{}", body.trim_end());
+    }
+    if let Some(record) = ffmpeg_record {
+        text.push_str("\n\n==== FFmpeg (bundled shared libraries) ====\n");
+        text.push_str(
+            "FFmpeg is licensed under the GNU Lesser General Public License v2.1 or\n\
+             later; the full text is ffmpeg/COPYING.LGPLv2.1 next to this file. The\n\
+             libraries are dynamically linked and may be replaced; the exact source\n\
+             and build recipe are recorded below (ffmpeg/SOURCE.txt).\n",
+        );
+        for f in ["SOURCE.txt", "LICENSE.md"] {
+            let body = fs::read_to_string(record.join(f))
+                .with_context(|| format!("reading {}", record.join(f).display()))?;
+            let _ = writeln!(text, "\n--- ffmpeg/{f} ---\n{}", body.trim_end());
+        }
     }
     text.push_str("\n\n==== Standard licence texts ====\n");
     for (id, body) in STANDARD_TEXTS {
@@ -288,14 +458,23 @@ fn run(cmd: &mut Command) -> Result<()> {
 
 /// Builds the release archive and checksums; returns the archive path.
 pub fn dist(root: &Path) -> Result<PathBuf> {
+    let ffmpeg = ffmpeg_prefix(root)?;
+    let libs = ffmpeg_library_files(&ffmpeg)?;
+    let record = ffmpeg.join(FFMPEG_RECORD);
+    eprintln!("  dist: bundling FFmpeg from {}", ffmpeg.display());
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let mut build = Command::new(&cargo);
     build
         .args(["build", "--profile", "distribution", "--locked"])
+        // Link against the bundled libraries and find them in lib/ at run time.
+        .env("FFMPEG_DIR", &ffmpeg)
+        .env("OM_BUNDLED_FFMPEG_RPATH", "1")
         .current_dir(root);
     for (pkg, _) in BINARIES {
         build.args(["-p", pkg]);
     }
+    // Not shipped: generates the video the smoke test decodes.
+    build.args(["-p", "fixturegen"]);
     run(&mut build)?;
     let name = format!(
         "openmapper-{}-{}-{}",
@@ -314,17 +493,46 @@ pub fn dist(root: &Path) -> Result<PathBuf> {
         fs::copy(&from, stage.join(exe(bin)))
             .with_context(|| format!("copying {}", from.display()))?;
     }
+    // FFmpeg: the libraries (symlinks resolved), then the compliance record
+    // as ffmpeg/ (licence text, source notice, build recipe).
+    let lib_dir = bundled_lib_dir(&stage);
+    fs::create_dir_all(&lib_dir)?;
+    for lib in &libs {
+        let name = lib.file_name().context("library file name")?;
+        fs::copy(lib, lib_dir.join(name)).with_context(|| format!("copying {}", lib.display()))?;
+    }
+    fs::create_dir_all(stage.join("ffmpeg"))?;
+    for entry in fs::read_dir(&record)?.flatten() {
+        let p = entry.path();
+        let is_source_archive = p.extension().is_some_and(|e| e == "gz");
+        if p.is_file() && !is_source_archive {
+            fs::copy(&p, stage.join("ffmpeg").join(entry.file_name()))?;
+        }
+    }
     for f in ["LICENSE", "NOTICE", "THIRD_PARTY.yml"] {
         fs::copy(root.join(f), stage.join(f))?;
     }
     fs::copy(root.join("docs/user-guide.md"), stage.join("USER-GUIDE.md"))?;
     fs::copy(root.join("SECURITY.md"), stage.join("SECURITY.md"))?;
-    fs::create_dir_all(stage.join("docs/media"))?;
     for doc in REFERENCE_DOCS {
-        fs::copy(root.join("docs").join(doc), stage.join("docs").join(doc))
+        let to = stage.join("docs").join(doc);
+        if let Some(dir) = to.parent() {
+            fs::create_dir_all(dir)?;
+        }
+        fs::copy(root.join("docs").join(doc), &to)
             .with_context(|| format!("copying docs/{doc}"))?;
     }
-    notices(root, &stage.join("THIRD_PARTY_LICENSES.txt"))?;
+    notices(root, &stage.join("THIRD_PARTY_LICENSES.txt"), Some(&record))?;
+    // Prove the staged binaries run on the bundled libraries alone and
+    // that those satisfy the release policy, before anything is archived.
+    verify_bundled_ffmpeg(&stage)?;
+    if let Some(cmd) = std::env::var_os("OM_SIGN_COMMAND") {
+        let cmd = cmd.to_string_lossy().into_owned();
+        let mut parts = cmd.split_whitespace();
+        let prog = parts.next().context("OM_SIGN_COMMAND is empty")?;
+        eprintln!("  dist: signing with `{cmd}`");
+        run(Command::new(prog).args(parts).arg(&stage).current_dir(root))?;
+    }
     let archive = dist.join(format!("{name}.tar.gz"));
     run(tar()
         .arg("-czf")
@@ -332,14 +540,27 @@ pub fn dist(root: &Path) -> Result<PathBuf> {
         .arg("-C")
         .arg(&dist)
         .arg(&name))?;
-    let sums = checksum_lines(std::slice::from_ref(&archive))?;
+    // The complete corresponding FFmpeg source travels with the release
+    // (LGPL-2.1 §6d), outside the binary archive.
+    let mut summed = vec![archive.clone()];
+    for entry in fs::read_dir(&record)?.flatten() {
+        let p = entry.path();
+        if p.is_file() && p.extension().is_some_and(|e| e == "gz") {
+            let to = dist.join(entry.file_name());
+            fs::copy(&p, &to)?;
+            summed.push(to);
+        }
+    }
+    let sums = checksum_lines(&summed)?;
     fs::write(dist.join("SHA256SUMS"), &sums)?;
     eprintln!("  dist: {}\n  {}", archive.display(), sums.trim_end());
     Ok(archive)
 }
 
-/// Unpacks `archive` into a fresh directory and exercises the CLI there.
-pub fn smoke(archive: &Path) -> Result<()> {
+/// Unpacks `archive` into a fresh directory and exercises the CLI there:
+/// project commands, the bundled FFmpeg, and (with a GPU, or always when
+/// `OM_REQUIRE_GPU=1`) decoding a generated video into a rendered frame.
+pub fn smoke(root: &Path, archive: &Path) -> Result<()> {
     let sums = archive.with_file_name("SHA256SUMS");
     if sums.is_file() {
         let want = fs::read_to_string(&sums)?;
@@ -365,6 +586,11 @@ pub fn smoke(archive: &Path) -> Result<()> {
         "THIRD_PARTY.yml",
         "THIRD_PARTY_LICENSES.txt",
         "USER-GUIDE.md",
+        "ffmpeg/SOURCE.txt",
+        "ffmpeg/COPYING.LGPLv2.1",
+        "ffmpeg/LICENSE.md",
+        "ffmpeg/build.sh",
+        "ffmpeg/components.txt",
     ] {
         if !top.join(f).is_file() {
             bail!("archive lacks {f}");
@@ -373,6 +599,21 @@ pub fn smoke(archive: &Path) -> Result<()> {
     let cli = top.join(exe("openmapper-cli"));
     if !top.join(exe("openmapper")).is_file() {
         bail!("archive lacks the desktop app");
+    }
+    let shipped = fs::read_dir(bundled_lib_dir(&top))?
+        .flatten()
+        .filter(|e| {
+            e.path()
+                .extension()
+                .is_some_and(|x| x == "dll" || x == "dylib")
+                || e.file_name().to_string_lossy().contains(".so.")
+        })
+        .count();
+    if shipped != FFMPEG_LIBS.len() {
+        bail!(
+            "archive has {shipped} FFmpeg libraries, expected {}",
+            FFMPEG_LIBS.len()
+        );
     }
     let project = dir.join("smoke.omproj");
     let commands = dir.join("commands.json");
@@ -392,7 +633,83 @@ pub fn smoke(archive: &Path) -> Result<()> {
         eprintln!("  smoke: openmapper-cli {}", args.join(" "));
         run(Command::new(&cli).args(&args).current_dir(&dir))?;
     }
+    verify_bundled_ffmpeg(&top)?;
+    smoke_video(root, &top, &dir)?;
     let _ = fs::remove_dir_all(&dir);
     eprintln!("  smoke: ok");
+    Ok(())
+}
+
+/// Decodes a generated FFV1/Matroska clip (both in the bundled component
+/// list) through the unpacked binaries into a PNG, and checks the frame is
+/// not blank. Skips without a GPU unless `OM_REQUIRE_GPU=1`.
+fn smoke_video(root: &Path, top: &Path, dir: &Path) -> Result<()> {
+    let fixturegen = root.join("target/distribution").join(exe("fixturegen"));
+    if !fixturegen.is_file() {
+        eprintln!("  smoke: no fixturegen build; skipping the video render");
+        return Ok(());
+    }
+    let prefix = ffmpeg_prefix(root)?;
+    let clip = dir.join("smoke.mkv");
+    let mut generate = Command::new(&fixturegen);
+    generate
+        .arg(&clip)
+        .args([
+            "--codec", "ffv1", "--frames", "30", "--rate", "30", "--size", "160x96",
+        ])
+        .args(["--audio", "48000"]);
+    with_prefix_libraries(&mut generate, &prefix);
+    run(&mut generate)?;
+    let cli = top.join(exe("openmapper-cli"));
+    let project = dir.join("video.omproj");
+    run(Command::new(&cli).arg("new").arg(&project).current_dir(dir))?;
+    let commands = dir.join("video.jsonl");
+    fs::write(
+        &commands,
+        [
+            r#"{"type":"set_canvas","canvas":{"width":160,"height":96}}"#,
+            r#"{"type":"add_media","media":{"id":"00000000000000000000000010","name":"clip","source":{"kind":"video","path":"smoke.mkv"},"playback":{"looping":true,"speed":{"num":1,"den":1}}}}"#,
+            r#"{"type":"add_surface","surface":{"id":"00000000000000000000000001","name":"full","shape":{"kind":"quad","corners":[[0,0],[1,0],[1,1],[0,1]],"uv":[[0,0],[1,0],[1,1],[0,1]]},"media":"00000000000000000000000010"}}"#,
+        ]
+        .join("\n"),
+    )?;
+    run(Command::new(&cli)
+        .arg("apply")
+        .arg(&project)
+        .arg(&commands)
+        .current_dir(dir))?;
+    let png = dir.join("frame.png");
+    let out = Command::new(&cli)
+        .arg("render")
+        .arg(&project)
+        .arg("-o")
+        .arg(&png)
+        .args(["--at", "0.5"])
+        .env_remove("LD_LIBRARY_PATH")
+        .env_remove("DYLD_LIBRARY_PATH")
+        .env_remove("DYLD_FALLBACK_LIBRARY_PATH")
+        .current_dir(dir)
+        .output()
+        .context("running openmapper-cli render")?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if !out.status.success() {
+        let gpu_required = std::env::var("OM_REQUIRE_GPU").as_deref() == Ok("1");
+        if stderr.contains("GPU adapter") && !gpu_required {
+            eprintln!("  smoke: no GPU adapter; skipping the video render");
+            return Ok(());
+        }
+        bail!("render failed ({}): {stderr}", out.status);
+    }
+    let img = image::open(&png)
+        .with_context(|| format!("decoding {}", png.display()))?
+        .to_rgba8();
+    let first = img.pixels().next().context("empty frame")?;
+    if img.width() != 160 || img.height() != 96 {
+        bail!("rendered {}×{}, expected 160×96", img.width(), img.height());
+    }
+    if img.pixels().all(|p| p == first) {
+        bail!("rendered frame is uniform; the video did not decode");
+    }
+    eprintln!("  smoke: decoded and rendered a video frame through the bundled FFmpeg");
     Ok(())
 }

@@ -147,8 +147,10 @@ mutex, so receivers never see a half-written frame.
 
 ### NDI
 
-OpenMapper **never ships NDI**. `om-ndi` loads an NDI runtime that the user
-installed (NDI Tools or a vendor installer) at run time. Search order:
+NDI® is a registered trademark of Vizrt NDI AB; OpenMapper is not affiliated
+with or endorsed by Vizrt. OpenMapper **never ships NDI**. `om-ndi` loads an
+NDI runtime that the user installed (NDI Tools or a vendor installer) at
+run time. Search order:
 `OM_NDI_LIBRARY` (a file), then `NDI_RUNTIME_DIR_V6` / `NDI_RUNTIME_DIR_V5`,
 then the platform's usual locations and library path. Without a runtime,
 NDI inputs and outputs report "the NDI runtime is not installed" and

@@ -43,22 +43,31 @@ docs/release/soak.md, 12–24 h on the reference system.
 
 ## Human: distribution (G-07, G-08)
 
-1. FFmpeg: as decided in G-07 (bundled LGPL build with source and recipe,
-   or run-time loading); verify `openmapper-cli ffmpeg` reports `LGPL` for
-   anything shipped.
+1. FFmpeg is bundled (D-031): the `package` job builds it and `cargo xtask
+   dist` refuses to archive unless the staged binaries load the bundled
+   build and `openmapper-cli ffmpeg --require-release` passes. Nothing to
+   do by hand; read the `package` logs' `ffmpeg:` line.
 2. Clean machines (fresh OS install or VM without developer tools or
    FFmpeg): unpack the archive, verify `SHA256SUMS`, start the app, open a
-   sample project, render, quit. Repeat on all three OSes.
-3. Code-sign and notarise the macOS app; Authenticode-sign the Windows
-   binaries; sign `SHA256SUMS` with the release key and publish the
-   signature next to it.
+   sample project with a video, render, quit. Repeat on all three OSes.
+   Expect the Gatekeeper/SmartScreen steps in docs/release/signing.md
+   while the binaries are unsigned.
+3. Signing (D-032): `SHA256SUMS` is signed keylessly by `release.yml`;
+   nothing to do by hand. Binary code signing activates by itself once the
+   secrets in docs/release/signing.md exist.
 
-## Human: legal (G-10)
+## Legal (G-10 — waived)
 
-Solicitor sign-off on the clean-room record, third-party notices,
-FFmpeg/codec patents and NDI naming before any public release.
+The solicitor review was waived by the owner (D-033,
+docs/release/legal-posture.md). Before publishing, re-read that document
+and confirm nothing has changed the posture (commercial distribution, a
+rights-holder request). Archive the reference product's licence agreement
+(CLEANROOM.md) if not yet done.
 
 ## Publish
 
-Tag the commit, attach the archives, `SHA256SUMS` and its signature,
-`THIRD_PARTY_LICENSES.txt`, and release notes listing known gaps.
+Push a `v*` tag: `release.yml` packages all three OSes, merges and signs
+`SHA256SUMS`, and opens a **draft** release with the archives, the FFmpeg
+source archive, `SHA256SUMS`, `SHA256SUMS.sigstore.json` and
+`PROVENANCE.txt`. Review it, add release notes listing known gaps
+(RELEASE_GAPS.md), and publish.

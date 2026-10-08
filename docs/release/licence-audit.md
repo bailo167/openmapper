@@ -1,9 +1,11 @@
 # Licence, NOTICE and FFmpeg distribution audit
 
-Date: 2026-10-07. This is the engineering record for the release gate in
-docs/PLAN.md ("FFmpeg LGPL/codec patent audit; NDI/vendor SDK
-redistribution audit"). Legal conclusions belong to the solicitor review
-(RELEASE_GAPS.md); this records the facts that review needs.
+Date: 2026-10-07, updated 2026-10-08. This is the engineering record for the
+release gate in docs/PLAN.md ("FFmpeg LGPL/codec patent audit; NDI/vendor
+SDK redistribution audit"). It records facts and the engineering decisions
+taken on them (D-031…D-033). The solicitor review that was to draw legal
+conclusions from it was waived by the owner (docs/release/legal-posture.md);
+nothing here is a legal clearance.
 
 ## OpenMapper itself
 
@@ -46,28 +48,35 @@ marked patch). Its `License.txt` is included in `THIRD_PARTY_LICENSES.txt`.
 
 ## FFmpeg
 
-- OpenMapper links FFmpeg **dynamically** and ships **no FFmpeg binaries**
-  today (`cargo xtask dist` does not bundle them). Users install FFmpeg;
-  `openmapper-cli ffmpeg` reports the licence profile of what was loaded.
-- Because linking is at load time, **the binaries do not start on a machine
-  without FFmpeg shared libraries** (Linux: system packages; Windows: DLLs
-  on `PATH` or next to the executable; macOS: Homebrew, whose FFmpeg is a
-  GPL build). This is a release blocker for "clean install": either bundle
-  an LGPL build per platform (docs/media/ffmpeg.md, release checklist:
-  publish the matching source and build recipe, no GPL/non-free parts,
-  user-replaceable libraries) or load FFmpeg at run time and run without
-  video when it is absent. Decision needed (RELEASE_GAPS.md G-07).
-- CI on Windows uses BtbN's LGPL shared build; macOS CI uses Homebrew (GPL;
-  development only).
-- **Codec patents** (H.264, HEVC, AAC …) are separate from copyright and
-  need counsel before any FFmpeg is distributed (RELEASE_GAPS.md).
+- OpenMapper links FFmpeg **dynamically**. Releases **bundle** the shared
+  libraries built by `tools/ffmpeg/build.sh` (D-031): FFmpeg n9.0.2 at a
+  pinned git commit, LGPL-2.1-or-later, no `--enable-gpl`, no
+  `--enable-nonfree`, no external libraries, components limited to
+  `tools/ffmpeg/components.txt` (docs/media/ffmpeg.md lists them).
+- LGPL compliance mechanics: libraries are separate, user-replaceable
+  shared files (§6b); every archive carries `ffmpeg/COPYING.LGPLv2.1`,
+  FFmpeg's `LICENSE.md`, `SOURCE.txt` (commit, configure line) and the
+  recipe; the complete corresponding source archive is attached to the
+  release next to the binaries (§6d); FFmpeg is named in NOTICE and
+  THIRD_PARTY_LICENSES.txt. `cargo xtask dist` verifies the staged binaries
+  load the bundled build and that it passes `openmapper-cli ffmpeg
+  --require-release` before archiving.
+- **Codec patents** are separate from copyright. Without a legal review
+  (D-033) the shipped set is deliberately narrow: decoders for production
+  formats, **no HEVC/VVC/VC-1**, encoders only for MPEG-2 (expired), FFV1,
+  raw and PCM. Residual exposure is recorded in
+  docs/release/legal-posture.md.
+- CI gates A/B still develop against distribution FFmpeg (Linux), Homebrew
+  (macOS; GPL, development only) and BtbN's LGPL shared build (Windows).
 
 ## NDI
 
 The NDI runtime is never bundled or redistributed; users install it from
 ndi.video (D-022). OpenMapper declares the C ABI it calls in its own source.
-Whether the product may use the "NDI" name and how it must attribute NDI
-under the NDI SDK licence/brand guidelines is for the legal review.
+The name is used descriptively for the protocol the user's runtime provides,
+with the attribution "NDI® is a registered trademark of Vizrt NDI AB" and a
+non-affiliation statement in NOTICE, THIRD_PARTY_LICENSES.txt and the user
+documentation (D-033). No legal opinion on the naming was obtained.
 
 ## Platform frameworks
 
@@ -76,7 +85,9 @@ libraries are used through the OS; nothing is redistributed.
 
 ## Signing and checksums
 
-`cargo xtask dist` writes `SHA256SUMS` for the archive; `cargo xtask smoke`
-verifies it before testing the unpacked archive. Signing `SHA256SUMS` (and
-code-signing/notarising the binaries) needs the publisher's keys and
-accounts and is a human step (RELEASE_GAPS.md).
+`cargo xtask dist` writes `SHA256SUMS` for the archive and the FFmpeg
+source archive; `cargo xtask smoke` verifies it before testing the unpacked
+archive. `release.yml` merges the per-OS checksum files and signs the result
+keylessly with Sigstore (D-032, docs/release/signing.md). Code-signing and
+notarising the binaries is wired behind repository secrets and inactive
+until the owner has the accounts.

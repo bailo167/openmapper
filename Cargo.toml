@@ -93,8 +93,15 @@ pollster = "1.0.1"
 bytemuck = { version = "1.25.2", features = ["derive"] }
 half = "2.7.1"
 display-info = "0.5.9"
-# Dynamically linked via pkg-config; see docs/media/ffmpeg.md.
-ffmpeg-next = "9.0.0"
+# Dynamically linked via pkg-config (or FFMPEG_DIR); see docs/media/ffmpeg.md.
+# No `filter`: libavfilter is not used, so release bundles need not ship it.
+ffmpeg-next = { version = "9.0.0", default-features = false, features = [
+    "codec",
+    "device",
+    "format",
+    "software-resampling",
+    "software-scaling",
+] }
 # macOS capture-device enumeration (names match FFmpeg's avfoundation input).
 objc2-av-foundation = "0.3.2"
 cpal = "0.18.2"

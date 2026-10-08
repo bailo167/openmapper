@@ -6051,6 +6051,7 @@ dependencies = [
  "anyhow",
  "cargo_metadata",
  "globset",
+ "image",
  "regex",
  "sha2",
 ]

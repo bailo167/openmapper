@@ -95,8 +95,13 @@ enum Action {
         #[command(subcommand)]
         action: LightAction,
     },
-    /// Show FFmpeg version and licence profile of the loaded libraries.
-    Ffmpeg,
+    /// Show FFmpeg version, licence profile and codecs of the loaded libraries.
+    Ffmpeg {
+        /// Fail unless the libraries satisfy the release policy (LGPL, no
+        /// external libraries, allowed encoders/decoders only; D-031).
+        #[arg(long)]
+        require_release: bool,
+    },
     /// List connected displays (index order used by outputs).
     Displays,
     /// Show the GPU adapter the renderer would use.
@@ -294,13 +299,36 @@ fn run(cli: Cli) -> Result<(), String> {
             at,
         } => render_output(&path, &output, &out, parse_size(&size)?, at),
         Action::Calibrate { path, output, size } => calibrate(&path, &output, parse_size(&size)?),
-        Action::Ffmpeg => {
+        Action::Ffmpeg { require_release } => {
+            use om_media_ffmpeg::policy;
             om_media_ffmpeg::init()?;
             let info = om_media_ffmpeg::info();
+            let codecs = policy::codecs();
             println!("libavcodec {}", info.avcodec_version);
+            println!("version:   {}", info.version_info);
             println!("licence:   {}", info.licence);
             println!("configure: {}", info.configuration);
-            Ok(())
+            println!("decoders:  {}", codecs.decoders.len());
+            println!("encoders:  {}", codecs.encoders.join(" "));
+            let mut problems = policy::check_configuration(&info).err().unwrap_or_default();
+            problems.extend(policy::check_codecs(&codecs).err().unwrap_or_default());
+            if problems.is_empty() {
+                println!("release policy: ok");
+                Ok(())
+            } else {
+                println!("release policy: {} problem(s)", problems.len());
+                for p in &problems {
+                    println!("  - {p}");
+                }
+                if require_release {
+                    Err(format!(
+                        "the loaded FFmpeg does not satisfy the release policy ({} problems)",
+                        problems.len()
+                    ))
+                } else {
+                    Ok(())
+                }
+            }
         }
         Action::Displays => {
             let displays = om_output::list_displays().map_err(|e| e.to_string())?;

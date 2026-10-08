@@ -10,6 +10,7 @@
 mod audio;
 mod interrupt;
 mod live;
+pub mod policy;
 mod sink;
 mod video;
 
@@ -108,6 +109,8 @@ pub fn init() -> Result<(), String> {
 #[derive(Debug, Clone)]
 pub struct FfmpegInfo {
     pub avcodec_version: String,
+    /// FFmpeg's own version string (`n9.0.2-openmapper` for bundled builds).
+    pub version_info: String,
     pub configuration: String,
     pub licence: LicenceProfile,
 }
@@ -118,6 +121,7 @@ pub fn info() -> FfmpegInfo {
     let configuration = ffmpeg_next::format::configuration().to_owned();
     FfmpegInfo {
         avcodec_version: format!("{}.{}.{}", v >> 16, (v >> 8) & 0xff, v & 0xff),
+        version_info: policy::version_info(),
         licence: classify_configuration(&configuration),
         configuration,
     }

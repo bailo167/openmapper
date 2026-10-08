@@ -157,6 +157,8 @@ solicitor/user, irreversible purchases. Everything else → DECISIONS.md.
 
 ## Release gates (before any public beta)
 
-Australian IP solicitor review of the clean-room record; FFmpeg LGPL/codec
-patent audit; NDI/vendor SDK redistribution audit; no proprietary artefacts in
-history.
+FFmpeg LGPL/codec patent audit (engineering record: docs/release/licence-audit.md,
+decision D-031); NDI/vendor SDK redistribution audit (D-022, D-033); no
+proprietary artefacts in history (`cargo xtask provenance --history`). The
+Australian IP solicitor review of the clean-room record was waived by the owner
+on 2026-10-08 (D-033, docs/release/legal-posture.md).

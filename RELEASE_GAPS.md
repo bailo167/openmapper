@@ -1,8 +1,10 @@
 # Release gaps — OpenMapper 1.0
 
-**Verdict (2026-10-07): NOT READY.** Every software requirement of the
-release gate that can be met without hardware, accounts or legal advice is
-met; the items below cannot be closed by automation and each blocks 1.0.
+**Verdict (2026-10-08): NOT READY.** Every software requirement of the
+release gate that can be met without hardware is met; the distribution
+decisions the owner delegated are made and implemented (G-07, G-08); the
+legal review is waived by the owner (G-10). The remaining items need
+hardware or the owner's own hands, and each still blocks 1.0.
 Per prompts/10-release.md, a release is never made because a date arrived.
 
 Status of the gate (prompts/10-release.md):
@@ -10,23 +12,23 @@ Status of the gate (prompts/10-release.md):
 | Requirement | State |
 |---|---|
 | All P0/P1 parity rows verified or waived | **52 of 58 verified**; 6 need hardware (G-01…G-05). 1 P2 row deferred (DeckLink, D-023). |
-| Clean macOS/Windows/Linux package install | Archive + checksum + unpacked-CLI smoke automated (`cargo xtask dist`, `smoke`, CI `package` job). **Blocked** on FFmpeg distribution (G-07) and signing/notarisation (G-08). |
+| Clean macOS/Windows/Linux package install | Archive bundles an LGPL FFmpeg (D-031); `cargo xtask dist` verifies the bundle, `smoke` decodes video from the unpacked archive; CI `package` job on all three OSes. **Clean-machine runs by a person pending** (checklist §Distribution). Binaries unsigned (G-08). |
 | 12–24 h reference-system soak | Tooling ready (`openmapper-cli soak`, GPU resources + resident memory); 1-hour software soak passed (stable GPU resources; memory 343→361 MiB peak, to be confirmed flat over 12–24 h; docs/release/soak.md). **Reference-system run pending** (G-09). |
 | Crash/recovery injection tests | Verified: 40 random process kills per run, 600 locally (M9). |
 | Project migration tests | Verified: N-2 chain, v1 compatibility fixture (M9). |
 | Physical projector validation | **Pending** (G-01, G-04). |
 | MIDI / DMX / live-I/O sign-off where hardware exists | Software verified on 3-OS CI (virtual MIDI, loopback DMX, Syphon, Spout); **physical sign-off pending** (G-02, G-03, G-05, G-06). |
-| Dependency / licence / NOTICE audit | Done: docs/release/licence-audit.md; `cargo deny` clean; `THIRD_PARTY_LICENSES.txt` generated into every archive. Legal confirmation in G-10. |
-| FFmpeg distribution audit | Facts recorded (docs/release/licence-audit.md, docs/media/ffmpeg.md); **decision pending** (G-07). |
-| Clean-room evidence audit | `cargo xtask provenance` (tree) and `--history` (all 685 blobs in all refs): clean. Solicitor review pending (G-10). |
+| Dependency / licence / NOTICE audit | Done: docs/release/licence-audit.md; `cargo deny` clean; `THIRD_PARTY_LICENSES.txt` generated into every archive, now including FFmpeg's notice and the NDI attribution. No legal confirmation (G-10 waived). |
+| FFmpeg distribution audit | **Decided and implemented** (G-07, D-031): bundled minimal LGPL build with source, recipe and policy check. |
+| Clean-room evidence audit | `cargo xtask provenance` (tree) and `--history` (all blobs in all refs): clean. Report published with every release (`PROVENANCE.txt`). Solicitor review waived (G-10). |
 | No proprietary artefacts in history | Verified by `provenance --history` (one reviewed false positive). |
 | Security review of WASM and FFI boundaries | Done, findings fixed with tests: docs/release/security-review.md. External review recommended (G-11). |
-| User documentation | docs/user-guide.md plus reference docs, shipped in the archive. |
-| Signed checksum generation | `SHA256SUMS` generated and verified; **signing needs the release key** (G-08). |
+| User documentation | docs/user-guide.md plus reference docs, shipped in the archive; now covers verification, unsigned-binary steps and the bundled codecs. |
+| Signed checksum generation | `SHA256SUMS` generated and verified; **signed keylessly (Sigstore) by `release.yml`** (G-08, D-032). |
 
 ## Blocking items
 
-Each needs a person, hardware, an account or professional advice.
+Each needs a person or hardware.
 
 ### G-01 Projector output (P0 `output.fullscreen-display`)
 With a physical projector on macOS, Windows and Linux: display
@@ -43,8 +45,10 @@ A real camera on each OS, including the OS permission prompt (cannot be
 answered unattended), disconnect/reconnect, and a project-trust prompt for
 a shared project using the camera. **macOS capture passed** on 2026-10-08
 (MacBook Air camera, 1920×1080 at 30 fps, no reconnects); still open:
-Windows and Linux cameras, unplug/replug, and the trust prompt. The signed
-macOS app bundle must declare `NSCameraUsageDescription`.
+Windows and Linux cameras, unplug/replug, and the trust prompt. The release
+build of the macOS executable now embeds `NSCameraUsageDescription` and a
+bundle identifier (apps/openmapper/macos/Info.plist); confirm the prompt
+appears from the unpacked archive.
 
 ### G-03 DMX node and console (P0 `dmx.physical-node`)
 An Art-Net node and an sACN receiver driving an LED fixture from a pixel
@@ -66,32 +70,56 @@ remain, plus interop with a third-party NDI application.
 A physical MIDI controller: hot-plug, learn, CC and notes driving
 parameters and cues (virtual-port tests already pass on 3-OS CI).
 
-### G-07 FFmpeg distribution decision
-The binaries link FFmpeg at load time and do not start without its shared
-libraries; macOS users' usual source (Homebrew) is a GPL build. Decide:
-(a) bundle an LGPL FFmpeg build per platform following
-docs/media/ffmpeg.md (publish matching source and build recipe), or
-(b) load FFmpeg at run time and run without video when it is absent. Then
-the codec-patent question below (G-10). Engineering for (a) or (b) follows
-the decision.
-
-### G-08 Signing and notarisation
-Sign `SHA256SUMS` with the release key; code-sign and notarise the macOS
-app (Apple Developer ID), Authenticode-sign the Windows binaries. Needs the
-publisher's keys and accounts. Unsigned macOS apps are blocked by
-Gatekeeper, so clean-install testing on macOS also waits for this.
-
 ### G-09 12–24 hour soak on the reference system
 Run the show configuration on the reference machine with real projectors,
 media, DMX and control for 12–24 h: `openmapper-cli soak` for the render
 path, and the desktop app with outputs and DMX for the full system.
 Procedure: docs/release/soak.md.
 
-### G-10 Legal review
-Australian IP solicitor review of the clean-room record (CLEANROOM.md,
-provenance results); FFmpeg LGPL compliance and codec patents for any
-distributed FFmpeg; NDI name/brand use and attribution; confirmation of the
-third-party notices.
+### G-12 Clean-machine install check (from the former G-07/G-08 blocker)
+On a fresh macOS, Windows and Linux machine or VM without developer tools
+or FFmpeg: unpack the archive, verify `SHA256SUMS` and its Sigstore bundle,
+follow the unsigned-binary steps (docs/release/signing.md), start the app,
+open a project with an H.264 and a ProRes clip, render, quit. Automated
+equivalents (`cargo xtask smoke` on runners without FFmpeg packages) pass;
+a person has not yet done it.
+
+## Decided and implemented (owner-delegated)
+
+### G-07 FFmpeg distribution — bundled minimal LGPL build (D-031)
+Releases bundle FFmpeg n9.0.2 shared libraries built by
+`tools/ffmpeg/build.sh` from `tools/ffmpeg/components.txt`: LGPL only, no
+external libraries, decoders for production formats (no HEVC/VVC/VC-1),
+encoders only for MPEG-2, FFV1, raw and PCM. `cargo xtask dist` refuses to
+archive unless the staged binaries load the bundled build and pass
+`openmapper-cli ffmpeg --require-release`; `smoke` decodes a clip through
+the unpacked archive; the complete corresponding source archive is attached
+to each release. Users can replace the libraries (docs/media/ffmpeg.md).
+**Remaining for the owner:** nothing to decide; the CI `package` job on
+macOS and Windows must be green (first run after this change).
+
+### G-08 Signing and notarisation — keyless checksums now, code signing when accounts exist (D-032)
+`release.yml` signs `SHA256SUMS` with Sigstore using the workflow's GitHub
+OIDC identity and verifies it; no key to manage. macOS Developer ID
+signing/notarisation and Windows Authenticode are implemented in
+`.github/scripts/` and run automatically once the secrets listed in
+docs/release/signing.md exist; until then binaries are unsigned and the
+user guide documents the Gatekeeper/SmartScreen steps.
+**Remaining for the owner, optional for 1.0:** an Apple Developer Program
+membership (US$99/yr) and a Windows code-signing certificate or Azure
+Trusted Signing account, then the secrets. The signing scripts are untested
+until then.
+
+### G-10 Legal review — waived by the owner (D-033)
+The Australian IP solicitor review will not be done before 1.0, by the
+owner's decision of 2026-10-08. docs/release/legal-posture.md records the
+waiver, what software reduced (narrow decoder-only codec set, no external
+libraries, NDI attribution and non-affiliation, published provenance
+report, generated notices) and the residual risks the owner carries. No
+document in the repository claims legal clearance.
+**Remaining for the owner:** archive the reference product's licence
+agreement (CLEANROOM.md; no solicitor needed), and re-read the posture
+document before any commercial distribution.
 
 ## Recommended before a public release (not blocking)
 
@@ -105,3 +133,4 @@ recommended before wide distribution.
 | Row | Priority | Reason |
 |---|---|---|
 | `live.decklink` | P2 | Deferred (D-023): needs the vendor SDK and hardware; not part of 1.0. |
+| G-10 legal review | gate | Owner's decision (D-033, docs/release/legal-posture.md); risk reduced in software, residual risk accepted by the owner. |
