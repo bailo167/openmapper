@@ -29,7 +29,7 @@
   priority: P0
   status: implemented-unverified
   tests: []
-  notes: Pending a physical Art-Net/sACN node and LED fixture (human test).
+  notes: Pending a physical Art-Net/sACN node and LED fixture (human test). Waived for v1 by the owner on 2026-10-08: software-verified, not hardware-verified (RELEASE_GAPS.md).
 - feature: dmx.input-control
   priority: P1
   status: verified

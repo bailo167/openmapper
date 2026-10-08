@@ -41,6 +41,10 @@
     0.018, max 9 levels (warped-edge anti-aliasing); 30-minute run: RSS flat
     (180,140 KiB), VRAM flat (1.297–1.304 GB), identical first/last frames.
     Fixed by this test: control window covering the output on one display;
-    Linux display names were connectors, not models. Still open: hot-plug,
-    sleep/wake, macOS and Windows projector runs.
+    Linux display names were connectors, not models. The run's content was
+    static, which hid a frozen output: the release archive (2026-10-08)
+    showed `--play` leaving the projector black/frozen on Wayland, fixed by
+    show mode (D-034, show_mode tests) and re-verified on the projector with
+    moving video, autostarted at boot. Hot-plug waived for v1 (owner).
+    Still open: sleep/wake, macOS and Windows projector runs.
   known_differences: []

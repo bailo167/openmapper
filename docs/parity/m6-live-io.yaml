@@ -37,6 +37,8 @@
     channel order and alpha correct. NDI's codec is lossy, so the loopback
     compares smooth content within a tolerance (measured mean ≈1.5, max ≤7
     levels); the first run had wrongly expected bit-exact frames.
+    Windows/Linux waived for v1 by the owner on 2026-10-08:
+    software-verified, not hardware-verified (RELEASE_GAPS.md).
 - feature: live.camera
   priority: P0
   status: implemented-unverified
@@ -49,6 +51,8 @@
     "try again" (EAGAIN) was treated as fatal (a reconnect every ~2 frames),
     and no capture size was requested (a portrait mode was chosen). Windows
     and Linux cameras still need a physical test.
+    Windows/Linux waived for v1 by the owner on 2026-10-08:
+    software-verified, not hardware-verified (RELEASE_GAPS.md).
 - feature: live.decklink
   priority: P2
   status: deferred
