@@ -12,12 +12,16 @@
 //! [`reference`] is an independent CPU implementation of the same maths used
 //! to check GPU output in golden tests.
 
+pub mod audio;
 mod colour;
 pub mod compare;
 mod compositor;
 pub mod effects;
 pub mod isf;
+pub mod output;
 mod plan;
+pub mod projection;
+mod readback;
 pub mod reference;
 
 pub use colour::{linear_to_srgb, linear_to_srgb8, srgb_to_linear};
@@ -25,3 +29,4 @@ pub use compositor::{Compositor, FrameInputs, FrameReport, RenderError, Resource
 pub use plan::{
     Clip, DrawItem, MAX_MASK_VERTICES, Mapping, MaskShape, RenderPlan, SkipReason, plan,
 };
+pub use readback::FrameReader;

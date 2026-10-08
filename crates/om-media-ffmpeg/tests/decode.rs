@@ -183,9 +183,10 @@ fn corrupt_and_missing_files_fail_cleanly() {
 }
 
 /// Plan acceptance: 10 minutes at 29.97 fps, sampled across the whole run,
-/// shows zero accumulated drift. ~18k frames; run in the nightly gate.
+/// shows zero accumulated drift. ~18k frames: slow in debug builds, so it
+/// runs in release as its own CI step on every OS.
 #[test]
-#[ignore = "long-running; nightly gate C"]
+#[ignore = "long-running in debug; CI runs it in release"]
 fn ten_minutes_without_drift() {
     let dir = tempfile::tempdir().unwrap();
     let rate = Rate::FPS_29_97;

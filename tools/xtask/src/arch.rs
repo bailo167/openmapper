@@ -46,6 +46,7 @@ pub const LAYERS: &[(&str, u8)] = &[
     ("om-plugin-host", 3),
     ("om-engine", 4),
     ("om-testkit", 4),
+    ("om-platform", 4),
     ("om-ui-egui", 5),
     ("openmapper", 6),
     ("openmapper-cli", 6),
@@ -66,6 +67,8 @@ pub const SAME_LAYER_ALLOWED: &[(&str, &str)] = &[
     ("om-surfaces", "om-render"),
     ("om-effects", "om-render"),
     ("om-render", "om-isf"),
+    // 3-D outputs render through calibrated projectors (DECISIONS.md D-025).
+    ("om-render", "om-calibration"),
     ("om-oscquery", "om-osc"),
     ("om-oscquery", "om-show"),
     ("om-osc", "om-show"),

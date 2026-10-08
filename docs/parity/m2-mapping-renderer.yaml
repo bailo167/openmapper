@@ -31,6 +31,16 @@
   priority: P0
   status: implemented-unverified
   source: [public-doc]
-  tests: []
-  notes: Needs the physical projector test (enumeration, fullscreen, hot-plug, sleep/wake, 30-min run).
+  platforms: { macos: pending, windows: pending, linux: pass }
+  tests: [hardware: G-01 projector run]
+  notes: >-
+    Linux physical test 2026-10-08: XGIMI HORIZON 20 projector on octv01
+    (Fedora 44, KDE Plasma Wayland, Radeon 760M/RADV), 1920×1080 @ 240 Hz.
+    Enumeration (EDID name "XGIMI TV"), fullscreen output on the projector,
+    output frame vs offscreen reference: 98.2% of values bit-exact, mean
+    0.018, max 9 levels (warped-edge anti-aliasing); 30-minute run: RSS flat
+    (180,140 KiB), VRAM flat (1.297–1.304 GB), identical first/last frames.
+    Fixed by this test: control window covering the output on one display;
+    Linux display names were connectors, not models. Still open: hot-plug,
+    sleep/wake, macOS and Windows projector runs.
   known_differences: []

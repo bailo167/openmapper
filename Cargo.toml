@@ -17,7 +17,15 @@ members = [
     "crates/om-osc",
     "crates/om-oscquery",
     "crates/om-midi",
+    "crates/om-dmx",
+    "crates/om-calibration",
+    "crates/om-plugin-api",
+    "crates/om-plugin-host",
     "crates/om-engine",
+    "crates/om-spout",
+    "crates/om-ndi",
+    "crates/om-syphon",
+    "crates/om-platform",
     "crates/om-ui-egui",
     "apps/openmapper",
     "apps/openmapper-cli",
@@ -44,12 +52,20 @@ om-gpu = { path = "crates/om-gpu" }
 om-render = { path = "crates/om-render" }
 om-output = { path = "crates/om-output" }
 om-media-ffmpeg = { path = "crates/om-media-ffmpeg" }
+om-platform = { path = "crates/om-platform" }
+om-spout = { path = "crates/om-spout" }
+om-ndi = { path = "crates/om-ndi" }
+om-syphon = { path = "crates/om-syphon" }
 om-audio = { path = "crates/om-audio" }
 om-isf = { path = "crates/om-isf" }
 om-show = { path = "crates/om-show" }
 om-osc = { path = "crates/om-osc" }
 om-oscquery = { path = "crates/om-oscquery" }
 om-midi = { path = "crates/om-midi" }
+om-dmx = { path = "crates/om-dmx" }
+om-calibration = { path = "crates/om-calibration" }
+om-plugin-api = { path = "crates/om-plugin-api" }
+om-plugin-host = { path = "crates/om-plugin-host" }
 om-engine = { path = "crates/om-engine" }
 om-ui-egui = { path = "crates/om-ui-egui" }
 
@@ -77,11 +93,37 @@ pollster = "1.0.1"
 bytemuck = { version = "1.25.2", features = ["derive"] }
 half = "2.7.1"
 display-info = "0.5.9"
-# Dynamically linked via pkg-config; see docs/media/ffmpeg.md.
-ffmpeg-next = "9.0.0"
+# Dynamically linked via pkg-config (or FFMPEG_DIR); see docs/media/ffmpeg.md.
+# No `filter`: libavfilter is not used, so release bundles need not ship it.
+ffmpeg-next = { version = "9.0.0", default-features = false, features = [
+    "codec",
+    "device",
+    "format",
+    "software-resampling",
+    "software-scaling",
+] }
+# macOS capture-device enumeration (names match FFmpeg's avfoundation input).
+objc2-av-foundation = "0.3.2"
 cpal = "0.18.2"
+# Spout (Windows): shared memory, named mutexes and D3D11 shared textures.
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+    "Win32_System_Registry",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+] }
+# NDI: the user's installed runtime is loaded at run time, never bundled.
+libloading = "0.8.9"
+# Builds the vendored Syphon sources (macOS).
+cc = "1.6.0"
+# WebAssembly plugins (milestone 9): JIT, WAT text for fixtures, no WASI.
+wasmtime = { version = "49.0.2", default-features = false, features = ["std", "runtime", "cranelift", "wat", "anyhow"] }
 rosc = "0.11.4"
-tiny_http = "0.12.0"
 mdns-sd = "0.21.5"
 midir = "0.11.0"
 eframe = { version = "=0.36.2", default-features = false, features = ["wgpu", "default_fonts", "accesskit", "wayland", "x11"] }
@@ -106,3 +148,9 @@ debug = false
 
 [profile.release]
 debug = "line-tables-only"
+
+# Distributed binaries (`cargo xtask dist`): release, without debug info.
+[profile.distribution]
+inherits = "release"
+debug = false
+strip = true

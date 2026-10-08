@@ -38,6 +38,12 @@ macro_rules! define_id {
             pub const fn from_u128(value: u128) -> Self {
                 Self(Ulid(value))
             }
+
+            /// The raw 128-bit value (e.g. as a protocol-level identifier).
+            #[must_use]
+            pub const fn as_u128(self) -> u128 {
+                self.0.0
+            }
         }
 
         impl Default for $name {
@@ -118,6 +124,16 @@ define_id!(
     /// Identifies a modulator.
     ModulatorId,
     "modulator"
+);
+define_id!(
+    /// Identifies a DMX network destination (an Art-Net or sACN node).
+    DmxNodeId,
+    "DMX node"
+);
+define_id!(
+    /// Identifies a DMX fixture (an LED strip, matrix or single light).
+    FixtureId,
+    "fixture"
 );
 
 #[cfg(test)]

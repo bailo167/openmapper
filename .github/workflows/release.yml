@@ -1,0 +1,41 @@
+# Release candidate: package on all three OSes (package.yml), merge and
+# sign the checksums (publish.yml), and for a tag open a *draft* GitHub
+# release for the owner to review and publish. Nothing is published
+# automatically.
+#
+# Signing posture (D-032, docs/release/signing.md): SHA256SUMS is signed
+# keylessly with Sigstore (cosign) using the publish.yml job's GitHub
+# Actions OIDC identity — no key to keep, and the signature proves which
+# repository, workflow and tag produced the files. Verification:
+#
+#   cosign verify-blob --bundle SHA256SUMS.sigstore.json \
+#     --certificate-identity-regexp '^https://github.com/bailo167/openmapper/\.github/workflows/publish\.yml@refs/tags/v' \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+#     SHA256SUMS
+#   sha256sum -c SHA256SUMS
+#
+# Binary code signing (Apple Developer ID + notarisation, Windows
+# Authenticode) runs inside package.yml when the publisher's secrets exist.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    uses: ./.github/workflows/package.yml
+    secrets: inherit
+
+  publish:
+    needs: package
+    uses: ./.github/workflows/publish.yml
+    permissions:
+      contents: write # draft release on a tag
+      id-token: write # Sigstore keyless signing
+    with:
+      draft_release: ${{ startsWith(github.ref, 'refs/tags/v') }}

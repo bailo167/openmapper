@@ -64,5 +64,8 @@ Every file in `docs/behaviour/` records:
 When in doubt, defer the feature rather than contaminate the implementation.
 
 Before any public beta: archive the licence agreement presented by the
-legitimately installed MadMapper version and obtain an Australian IP
-solicitor's review of the clean-room record.
+legitimately installed MadMapper version. The Australian IP solicitor's
+review of the clean-room record that this policy originally required was
+**waived by the project owner on 2026-10-08** (D-033,
+docs/release/legal-posture.md); the provenance scan report is published with
+every release in its place, and the review may still be commissioned later.

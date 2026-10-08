@@ -4,7 +4,11 @@
 //! mutates the project directly.
 
 mod canvas;
+mod dmx_ui;
 mod gpu;
+mod live_ui;
+mod output_ui;
+mod plugin_ui;
 mod show_ui;
 
 use std::path::PathBuf;
@@ -12,10 +16,8 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, Pos2, Stroke};
 use om_command::Command;
-use std::sync::Arc;
 
-use om_engine::{OpenReport, Session, Transport, path_for_storage};
-use om_media_core::{AudioOpener, VideoOpener};
+use om_engine::{Adapters, OpenReport, Session, Transport, path_for_storage};
 use om_output::Display;
 use om_project::{
     BlendMode, Canvas, MAX_MASK_POINTS, Mask, MaskPoint, Media, MediaSource, Output, PatternKind,
@@ -26,6 +28,9 @@ use om_types::{MediaId, OutputId, SurfaceId, UnitInterval};
 
 use crate::canvas::{Drag, begin_drag, dragged_shape, fit_rect, screen_outline, to_screen};
 use crate::gpu::Viewer;
+
+/// How long after opening an output window it is raised until focused.
+const OUTPUT_RAISE_WINDOW: Duration = Duration::from_secs(3);
 
 /// How often to re-enumerate displays and retry missing media.
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -39,6 +44,9 @@ pub struct OpenMapperApp {
     /// Text buffer for the project / media path field.
     path_input: String,
     media_path_input: String,
+    /// Folder searched by "Relink", and the cached count of missing media.
+    relink_folder: String,
+    missing_media: Option<(Instant, usize)>,
     status: Status,
     rename_buffer: Option<(SurfaceId, String)>,
     project_name_buffer: Option<String>,
@@ -50,6 +58,15 @@ pub struct OpenMapperApp {
     /// The project as rendered this frame (document + show overrides).
     effective: Option<om_project::Project>,
     show_tab: show_ui::ShowTab,
+    live_ui: live_ui::LiveUi,
+    /// Output windows currently open, with when each opened (they are
+    /// raised until focused, for a short while after opening).
+    open_outputs: std::collections::HashMap<OutputId, Instant>,
+    /// Unattended show: minimise the control window once an output is open,
+    /// so it cannot cover the show on a single display (Wayland compositors
+    /// refuse to raise windows without user input).
+    minimise_for_show: bool,
+    dmx_ui: dmx_ui::DmxUi,
     displays: Vec<Display>,
     display_error: Option<String>,
     last_poll: Option<Instant>,
@@ -57,6 +74,11 @@ pub struct OpenMapperApp {
     pending: Vec<(Command, Option<String>)>,
     end_coalescing: bool,
     transport: Transport,
+    /// Projects allowed to use the camera, network output, DMX and
+    /// remote control (om_engine::trust).
+    trust: om_engine::trust::TrustStore,
+    /// Revision whose connections were last checked against `trust`.
+    trust_checked: Option<u64>,
 }
 
 #[derive(Debug, Default)]
@@ -73,18 +95,19 @@ impl OpenMapperApp {
     pub fn new(
         cc: &eframe::CreationContext<'_>,
         path: Option<PathBuf>,
-        opener: Option<Arc<dyn VideoOpener>>,
-        audio_opener: Option<Arc<dyn AudioOpener>>,
+        adapters: &Adapters,
     ) -> Self {
         let mut app = Self {
             session: Session::new("Untitled"),
             viewer: cc
                 .wgpu_render_state
                 .as_ref()
-                .map(|rs| Viewer::new(&cc.egui_ctx, rs, opener, audio_opener)),
+                .map(|rs| Viewer::new(&cc.egui_ctx, rs, adapters)),
             selected: None,
             path_input: String::from("untitled.omproj"),
             media_path_input: String::new(),
+            relink_folder: String::new(),
+            missing_media: None,
             status: Status::default(),
             rename_buffer: None,
             project_name_buffer: None,
@@ -99,6 +122,12 @@ impl OpenMapperApp {
             live: om_engine::live::Live::new(),
             effective: None,
             show_tab: show_ui::ShowTab::Cues,
+            dmx_ui: dmx_ui::DmxUi::default(),
+            live_ui: live_ui::LiveUi::new(adapters.live.clone().map(om_engine::Discovery::new)),
+            open_outputs: std::collections::HashMap::new(),
+            minimise_for_show: false,
+            trust: om_engine::trust::TrustStore::load_default(),
+            trust_checked: None,
         };
         if app.viewer.is_none() {
             app.error("No GPU renderer available; the canvas cannot be shown.");
@@ -113,6 +142,13 @@ impl OpenMapperApp {
     /// Starts the show transport.
     pub fn play(&mut self) {
         self.transport.play(Instant::now());
+    }
+
+    /// Unattended show: plays, and minimises the control window once an
+    /// output window is open so the show is never hidden behind it.
+    pub fn run_show(&mut self) {
+        self.play();
+        self.minimise_for_show = true;
     }
 
     fn info(&mut self, msg: impl Into<String>) {
@@ -156,6 +192,10 @@ impl OpenMapperApp {
         match Session::open(&path) {
             Ok((session, report)) => {
                 self.session = session;
+                // Someone else's project must not reach the camera, the
+                // network or DMX until allowed.
+                self.live.external_blocked = !self.trust.is_trusted(self.session.project());
+                self.trust_checked = None;
                 self.selected = None;
                 self.drag = None;
                 self.info(open_message(&path, &report));
@@ -224,6 +264,7 @@ impl OpenMapperApp {
             ui.menu_button("File", |ui| {
                 if ui.button("New").clicked() {
                     self.session = Session::new("Untitled");
+                    self.live.external_blocked = false;
                     self.selected = None;
                     self.info("New project");
                     ui.close();
@@ -305,6 +346,8 @@ impl OpenMapperApp {
             self.media_list(ui);
             ui.separator();
             self.output_list(ui);
+            ui.separator();
+            self.dmx_panel(ui);
         });
     }
 
@@ -385,8 +428,59 @@ impl OpenMapperApp {
         }
     }
 
+    /// Shown when media files are missing: search a folder and relink.
+    fn relink_controls(&mut self, ui: &mut egui::Ui) {
+        let stale = self
+            .missing_media
+            .is_none_or(|(t, _)| t.elapsed() > Duration::from_secs(2));
+        if stale {
+            let n = om_engine::relink::missing(self.session.project(), self.session.project_dir())
+                .len();
+            self.missing_media = Some((Instant::now(), n));
+        }
+        let missing = self.missing_media.map_or(0, |(_, n)| n);
+        if missing == 0 {
+            return;
+        }
+        ui.horizontal(|ui| {
+            ui.colored_label(ui.visuals().warn_fg_color, format!("{missing} missing"));
+            ui.add(
+                egui::TextEdit::singleline(&mut self.relink_folder)
+                    .hint_text("folder to search")
+                    .desired_width(130.0),
+            );
+            let folder = PathBuf::from(self.relink_folder.trim());
+            if ui
+                .add_enabled(
+                    !self.relink_folder.trim().is_empty(),
+                    egui::Button::new("Relink"),
+                )
+                .on_hover_text("Find missing files by name in this folder (one undo step)")
+                .clicked()
+            {
+                let found = om_engine::relink::find(
+                    self.session.project(),
+                    self.session.project_dir(),
+                    &folder,
+                );
+                match om_engine::relink::command(&found) {
+                    Some(cmd) => {
+                        self.queue(cmd);
+                        self.info(format!(
+                            "Relinked {} of {missing} missing media",
+                            found.len()
+                        ));
+                        self.missing_media = None;
+                    }
+                    None => self.error(format!("No missing media found in {}", folder.display())),
+                }
+            }
+        });
+    }
+
     fn media_list(&mut self, ui: &mut egui::Ui) {
         ui.heading("Media");
+        self.relink_controls(ui);
         ui.horizontal(|ui| {
             for (label, pattern) in [
                 ("+ UV grid", PatternKind::UvGrid),
@@ -400,6 +494,7 @@ impl OpenMapperApp {
                             name: label.trim_start_matches("+ ").to_owned(),
                             source: MediaSource::Pattern { pattern },
                             playback: Default::default(),
+                            plugins: Vec::new(),
                             extensions: Default::default(),
                         },
                         index: None,
@@ -429,6 +524,7 @@ impl OpenMapperApp {
                         name,
                         source: source_for_path(&chosen, stored),
                         playback: Default::default(),
+                        plugins: Vec::new(),
                         extensions: Default::default(),
                     },
                     index: None,
@@ -436,6 +532,7 @@ impl OpenMapperApp {
                 self.media_path_input.clear();
             }
         });
+        self.live_input_controls(ui);
         let show = self.transport.time(Instant::now());
         let media = self.session.project().media.clone();
         for m in media {
@@ -500,6 +597,7 @@ impl OpenMapperApp {
                         });
                 }
             }
+            self.media_plugin_controls(ui, &m);
             if m.source.is_time_based() {
                 ui.horizontal(|ui| {
                     ui.add_space(14.0);
@@ -584,6 +682,9 @@ impl OpenMapperApp {
                         name: format!("Output {n}"),
                         enabled: false,
                         display,
+                        publish: Vec::new(),
+                        mapping: Default::default(),
+                        projection: None,
                         extensions: Default::default(),
                     },
                     index: None,
@@ -665,6 +766,9 @@ impl OpenMapperApp {
                     }
                     None => {}
                 }
+                self.publish_controls(ui, &o);
+                self.output_mapping_controls(ui, &o);
+                self.output_projection_controls(ui, &o);
             });
         }
     }
@@ -1167,6 +1271,8 @@ impl OpenMapperApp {
             egui::StrokeKind::Outside,
         );
 
+        self.draw_fixtures(&painter, rect);
+
         // Outlines for every surface; handles for the selected one.
         let project = self.session.project();
         for s in &project.surfaces {
@@ -1319,6 +1425,7 @@ impl OpenMapperApp {
             return;
         };
         let outputs = self.session.project().outputs.clone();
+        let mut shown = std::collections::HashMap::new();
         for o in outputs.iter().filter(|o| o.enabled) {
             let Some(display) = o
                 .display
@@ -1327,12 +1434,28 @@ impl OpenMapperApp {
             else {
                 continue;
             };
+            let size = display.native_size();
+            let Some(texture) = self
+                .viewer
+                .as_mut()
+                .and_then(|v| v.output_texture(o, size))
+                .or(Some(texture))
+            else {
+                continue;
+            };
+            // On a single display the control window would otherwise cover
+            // the show: keep outputs above it (where the platform supports
+            // window levels) and raise each one when it opens (Wayland has
+            // no window levels; Escape closes an output).
             let builder = egui::ViewportBuilder::default()
                 .with_title(format!("OpenMapper — {}", o.name))
                 .with_monitor(display.index as usize)
-                .with_decorations(false);
+                .with_decorations(false)
+                .with_window_level(egui::WindowLevel::AlwaysOnTop);
             let id = egui::ViewportId::from_hash_of(("output", o.id));
+            let mut focused = false;
             let close = ctx.show_viewport_immediate(id, builder, |ui, _class| {
+                focused = ui.input(|i| i.viewport().focused == Some(true));
                 let rect = ui.max_rect();
                 ui.painter().image(
                     texture,
@@ -1348,12 +1471,76 @@ impl OpenMapperApp {
                     name: None,
                     enabled: Some(false),
                 });
+            } else {
+                // The window may not be mapped on its first frame, so keep
+                // asking until it has focus (bounded, so an operator who
+                // clicks back to the control window keeps it).
+                let opened = self
+                    .open_outputs
+                    .get(&o.id)
+                    .copied()
+                    .unwrap_or_else(Instant::now);
+                if !focused && opened.elapsed() < OUTPUT_RAISE_WINDOW {
+                    ctx.send_viewport_cmd_to(id, egui::ViewportCommand::Focus);
+                    ctx.request_repaint();
+                }
+                shown.insert(o.id, opened);
             }
         }
+        if self.minimise_for_show && !shown.is_empty() {
+            ctx.send_viewport_cmd_to(
+                egui::ViewportId::ROOT,
+                egui::ViewportCommand::Minimized(true),
+            );
+            self.minimise_for_show = false;
+        }
+        self.open_outputs = shown;
     }
 
     fn preview_id(&self) -> Option<egui::TextureId> {
         self.viewer.as_ref().and_then(|v| v.preview_id())
+    }
+
+    /// While allowed, the user's own edits keep the project allowed; while
+    /// blocked, shows what is held back and offers to allow it.
+    fn trust_bar(&mut self, ui: &mut egui::Ui) {
+        let project = self.session.project();
+        if !self.live.external_blocked {
+            if self.trust_checked != Some(project.revision) {
+                self.trust_checked = Some(project.revision);
+                if !self.trust.is_trusted(project) {
+                    let project = project.clone();
+                    if let Err(e) = self.trust.allow(&project) {
+                        self.error(format!("Could not save project permissions: {e}"));
+                    }
+                }
+            }
+            return;
+        }
+        let items = om_engine::trust::external(project);
+        if items.is_empty() {
+            self.live.external_blocked = false;
+            return;
+        }
+        let mut allow = false;
+        egui::Panel::top("trust").show(ui, |ui| {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                "This project wants to connect outside OpenMapper. Held back until you allow it:",
+            );
+            for item in &items {
+                ui.label(format!("• {item}"));
+            }
+            allow = ui.button("Allow for this project").clicked();
+        });
+        if allow {
+            let project = self.session.project().clone();
+            if let Err(e) = self.trust.allow(&project) {
+                self.error(format!("Could not save project permissions: {e}"));
+            }
+            self.live.external_blocked = false;
+            self.trust_checked = Some(project.revision);
+        }
     }
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
@@ -1489,7 +1676,7 @@ fn shader_input_controls(
         let label = input.label.clone().unwrap_or_else(|| input.name.clone());
         let current = values.get(&input.name).cloned();
         match input.kind {
-            InputKind::Image => {}
+            InputKind::Image | InputKind::Audio | InputKind::AudioFft => {}
             InputKind::Float => {
                 let mut x = match current {
                     Some(ShaderValue::Number(n)) => n.get(),
@@ -1645,6 +1832,7 @@ impl eframe::App for OpenMapperApp {
         }
         self.handle_shortcuts(&ctx);
         egui::Panel::top("menu").show(ui, |ui| self.top_bar(ui));
+        self.trust_bar(ui);
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
         egui::Panel::bottom("show")
             .resizable(true)

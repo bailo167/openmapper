@@ -8,6 +8,8 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+om-plugin-host.workspace = true
+om-plugin-api.workspace = true
 om-types.workspace = true
 om-project.workspace = true
 om-command.workspace = true
@@ -18,12 +20,14 @@ om-show.workspace = true
 om-osc.workspace = true
 om-oscquery.workspace = true
 om-midi.workspace = true
+om-dmx.workspace = true
+serde_json.workspace = true
 om-time.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
 rosc.workspace = true
-serde_json.workspace = true
+om-geom.workspace = true
 om-media-ffmpeg = { workspace = true, features = ["fixtures"] }
 image.workspace = true
 tempfile.workspace = true

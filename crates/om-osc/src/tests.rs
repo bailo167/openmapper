@@ -140,3 +140,59 @@ fn server_receives_udp_and_restarts_on_same_port() {
     let again = OscServer::start(port).unwrap();
     assert_eq!(again.port(), port);
 }
+
+#[test]
+fn hostile_values_and_floods_are_bounded() {
+    let release = |v: OscType| translate(&msg("/openmapper/cue/release", vec![v])).unwrap();
+    assert_eq!(
+        release(OscType::Double(f64::INFINITY)),
+        ControlMessage::Action(Action::CueRelease { fade: 0.0 }),
+        "non-finite is ignored"
+    );
+    assert_eq!(
+        release(OscType::Double(1e300)),
+        ControlMessage::Action(Action::CueRelease {
+            fade: MAX_FADE_SECONDS
+        })
+    );
+    let id = om_types::TimelineId::from_u128(1);
+    let seek = translate(&msg(
+        &format!("/openmapper/timeline/{id}/seek"),
+        vec![OscType::Double(1e300)],
+    ))
+    .unwrap();
+    assert_eq!(
+        seek,
+        ControlMessage::Action(Action::TimelineSeek(id, MAX_SEEK_SECONDS))
+    );
+    assert!(
+        translate(&msg(
+            &format!("/openmapper/timeline/{id}/seek"),
+            vec![OscType::Float(f32::NAN)]
+        ))
+        .is_err()
+    );
+
+    // A flood with nobody draining is capped, not queued without bound.
+    let server = OscServer::start(0).unwrap();
+    let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let packet = rosc::encoder::encode(&OscPacket::Message(msg(
+        "/openmapper/transport/play",
+        vec![],
+    )))
+    .unwrap();
+    let total = MAX_QUEUED + 2000;
+    for _ in 0..total {
+        let _ = sender.send_to(&packet, ("127.0.0.1", server.port()));
+    }
+    // Wait until reception settles (the OS may drop some datagrams).
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut last = u64::MAX;
+    while server.received() != last && std::time::Instant::now() < deadline {
+        last = server.received();
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let drained = server.drain().len();
+    assert!(drained <= MAX_QUEUED, "{drained}");
+    assert!(drained > 0);
+}

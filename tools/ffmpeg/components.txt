@@ -1,0 +1,127 @@
+# FFmpeg components OpenMapper ships (docs/media/ffmpeg.md, D-031).
+#
+# One `configure` flag per line; `#` starts a comment. tools/ffmpeg/build.sh
+# passes these after `--disable-everything`, so nothing outside this list is
+# compiled in. om-media-ffmpeg's release policy (`release_policy`) and its
+# tests check this file: no GPL or non-free parts, no external libraries,
+# encoders only for codecs without active patent licensing programmes, and
+# no HEVC/VVC/VC-1 decoders.
+#
+# Core libraries (avfilter and the command-line programs are not built).
+--enable-avcodec
+--enable-avformat
+--enable-avdevice
+--enable-swscale
+--enable-swresample
+--enable-network
+
+# Video decoders: delivery and intermediate codecs used in show production.
+--enable-decoder=h264
+--enable-decoder=mpeg4
+--enable-decoder=mpeg2video
+--enable-decoder=mpeg1video
+--enable-decoder=mjpeg
+--enable-decoder=prores
+--enable-decoder=dnxhd
+--enable-decoder=cfhd
+--enable-decoder=hap
+--enable-decoder=ffv1
+--enable-decoder=huffyuv
+--enable-decoder=utvideo
+--enable-decoder=rawvideo
+--enable-decoder=v210
+--enable-decoder=vp8
+--enable-decoder=vp9
+--enable-decoder=theora
+--enable-decoder=qtrle
+--enable-decoder=dvvideo
+--enable-decoder=h263
+--enable-decoder=flv
+
+# Audio decoders.
+--enable-decoder=aac
+--enable-decoder=alac
+--enable-decoder=flac
+--enable-decoder=mp3float
+--enable-decoder=opus
+--enable-decoder=vorbis
+--enable-decoder=pcm_u8
+--enable-decoder=pcm_s16le
+--enable-decoder=pcm_s16be
+--enable-decoder=pcm_s24le
+--enable-decoder=pcm_s24be
+--enable-decoder=pcm_s32le
+--enable-decoder=pcm_s32be
+--enable-decoder=pcm_f32le
+--enable-decoder=pcm_f32be
+
+# Encoders: only what publishing needs (crates/om-media-ffmpeg/src/sink.rs)
+# and lossless/raw formats. No H.264, HEVC, AAC or MPEG-4 Part 2 encoders.
+--enable-encoder=ffv1
+--enable-encoder=mpeg2video
+--enable-encoder=rawvideo
+--enable-encoder=pcm_s16le
+--enable-encoder=pcm_f32le
+
+# Parsers and bitstream filters for the decoders above.
+--enable-parser=h264
+--enable-parser=mpeg4video
+--enable-parser=mpegvideo
+--enable-parser=mjpeg
+--enable-parser=dnxhd
+--enable-parser=vp8
+--enable-parser=vp9
+--enable-parser=h263
+--enable-parser=aac
+--enable-parser=mpegaudio
+--enable-parser=flac
+--enable-parser=vorbis
+--enable-parser=opus
+--enable-bsf=h264_mp4toannexb
+--enable-bsf=aac_adtstoasc
+--enable-bsf=extract_extradata
+--enable-bsf=mpeg4_unpack_bframes
+--enable-bsf=vp9_superframe_split
+--enable-bsf=null
+
+# Containers.
+--enable-demuxer=mov
+--enable-demuxer=matroska
+--enable-demuxer=avi
+--enable-demuxer=mxf
+--enable-demuxer=dv
+--enable-demuxer=mpegts
+--enable-demuxer=mpegps
+--enable-demuxer=mpegvideo
+--enable-demuxer=m4v
+--enable-demuxer=h264
+--enable-demuxer=mjpeg
+--enable-demuxer=ivf
+--enable-demuxer=flv
+--enable-demuxer=live_flv
+--enable-demuxer=rawvideo
+--enable-demuxer=wav
+--enable-demuxer=aiff
+--enable-demuxer=caf
+--enable-demuxer=flac
+--enable-demuxer=ogg
+--enable-demuxer=mp3
+--enable-demuxer=aac
+--enable-demuxer=rtsp
+--enable-demuxer=sdp
+--enable-demuxer=rtp
+--enable-demuxer=hls
+--enable-muxer=mpegts
+--enable-muxer=rtp_mpegts
+--enable-muxer=rtp
+--enable-muxer=matroska
+
+# Protocols (docs/live-io.md). SRT needs libsrt and is not bundled.
+--enable-protocol=file
+--enable-protocol=tcp
+--enable-protocol=udp
+--enable-protocol=rtp
+--enable-protocol=http
+--enable-protocol=https
+--enable-protocol=tls
+--enable-protocol=rtmp

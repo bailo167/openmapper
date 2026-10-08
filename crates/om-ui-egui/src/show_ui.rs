@@ -134,7 +134,7 @@ impl OpenMapperApp {
                 (ShowTab::Cues, "Cues"),
                 (ShowTab::Timelines, "Timelines"),
                 (ShowTab::Modulators, "Modulators"),
-                (ShowTab::Control, "OSC / MIDI"),
+                (ShowTab::Control, "OSC / MIDI / DMX"),
             ] {
                 ui.selectable_value(&mut self.show_tab, tab, label);
             }
@@ -569,6 +569,22 @@ impl OpenMapperApp {
             }
             ui.weak("(0 = off)");
         });
+        let mut network = controls.network;
+        if ui
+            .checkbox(&mut network, "Accept control from other computers")
+            .on_hover_text(
+                "Listen on every network interface and advertise OSCQuery over mDNS. \
+                 Anyone on the network can then control the show: use trusted networks only.",
+            )
+            .changed()
+        {
+            self.queue(Command::SetControls {
+                controls: om_project::Controls {
+                    network,
+                    ..controls.clone()
+                },
+            });
+        }
         ui.label(&self.live.servers.status);
         if let Some(e) = self.live.servers.errors.last() {
             ui.colored_label(
@@ -620,6 +636,78 @@ impl OpenMapperApp {
         if let Some(i) = remove {
             let mut c = controls.clone();
             c.midi.remove(i);
+            self.queue(Command::SetControls { controls: c });
+        }
+        ui.separator();
+        self.dmx_input_section(ui, &controls);
+    }
+
+    fn dmx_input_section(&mut self, ui: &mut egui::Ui, controls: &om_project::Controls) {
+        let input = &controls.dmx_input;
+        ui.horizontal(|ui| {
+            let mut enabled = input.enabled;
+            if ui
+                .checkbox(&mut enabled, "DMX input (Art-Net / sACN)")
+                .changed()
+            {
+                let mut c = controls.clone();
+                c.dmx_input.enabled = enabled;
+                self.queue(Command::SetControls { controls: c });
+            }
+            ui.weak(self.live.dmx.status());
+        });
+        if !input.enabled {
+            return;
+        }
+        ui.horizontal(|ui| {
+            ui.label("DMX learn parameter:");
+            let mut param = ParamId::MasterOpacity;
+            if param_picker(ui, "dmx learn", self.session.project(), &mut param) {
+                self.live.dmx.learn(MidiTarget::Param { param });
+            }
+            if ui.small_button("learn GO").clicked() {
+                self.live.dmx.learn(MidiTarget::CueGo);
+            }
+            if let Some(target) = self.live.dmx.learning() {
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    format!("move a DMX channel for {target:?}"),
+                );
+                if ui.small_button("Cancel").clicked() {
+                    self.live.dmx.cancel_learn();
+                }
+            }
+        });
+        let mut changed = None;
+        for (i, b) in input.bindings.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.monospace(format!("universe {} ch {}", b.universe, b.channel));
+                let mut fine = b.fine;
+                if ui
+                    .add_enabled(b.channel < 512, egui::Checkbox::new(&mut fine, "16-bit"))
+                    .changed()
+                {
+                    let mut c = controls.clone();
+                    c.dmx_input.bindings[i].fine = fine;
+                    changed = Some(c);
+                }
+                ui.label("→");
+                ui.label(match &b.target {
+                    MidiTarget::Param { param } => params::list(self.session.project())
+                        .into_iter()
+                        .find(|p| &p.id == param)
+                        .map_or_else(|| param.to_string(), |p| p.label),
+                    MidiTarget::CueGo => "GO (next cue)".into(),
+                    MidiTarget::Cue { cue } => format!("cue {cue}"),
+                });
+                if ui.small_button("x").clicked() {
+                    let mut c = controls.clone();
+                    c.dmx_input.bindings.remove(i);
+                    changed = Some(c);
+                }
+            });
+        }
+        if let Some(c) = changed {
             self.queue(Command::SetControls { controls: c });
         }
     }

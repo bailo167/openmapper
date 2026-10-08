@@ -71,7 +71,39 @@ fn setup() -> (Session, Transport, Live, u16, u16) {
                     path: "clip.mp4".into(),
                 },
                 playback: Default::default(),
+                plugins: Vec::new(),
                 extensions: Default::default(),
+            },
+            index: None,
+        })
+        .unwrap();
+    // A fixture, so its brightness and enabled parameters are covered too.
+    let node = om_project::dmx::DmxNode {
+        id: om_types::DmxNodeId::from_u128(3),
+        name: "node".into(),
+        enabled: false,
+        protocol: om_project::dmx::DmxProtocol::ArtNet {
+            address: "127.0.0.1".into(),
+        },
+    };
+    session
+        .execute(Command::PutDmxNode { node, index: None })
+        .unwrap();
+    session
+        .execute(Command::PutFixture {
+            fixture: om_project::dmx::Fixture {
+                id: om_types::FixtureId::from_u128(4),
+                name: "strip".into(),
+                enabled: true,
+                node: om_types::DmxNodeId::from_u128(3),
+                universe: 0,
+                address: 1,
+                order: Default::default(),
+                encoding: Default::default(),
+                brightness: om_types::UnitInterval::ONE,
+                shape: om_project::dmx::PixelShape::Point {
+                    at: om_geom::Point2::new(0.5, 0.5).unwrap(),
+                },
             },
             index: None,
         })
@@ -111,7 +143,12 @@ fn pump(
 fn every_parameter_round_trips_over_osc_and_oscquery() {
     let (mut session, mut transport, mut live, osc, query) = setup();
     let infos = params::list(session.project());
-    assert!(infos.len() >= 6, "{infos:?}");
+    assert!(infos.len() >= 8, "{infos:?}");
+    assert!(
+        infos
+            .iter()
+            .any(|i| i.id.to_string().starts_with("fixture/"))
+    );
     for info in infos {
         let (arg, want) = match info.kind {
             ParamKind::Bool => {
@@ -231,4 +268,31 @@ fn servers_restart_when_ports_change() {
         s.project().master.blackout
     });
     assert!(session.project().master.blackout);
+}
+
+#[test]
+fn control_floods_coalesce_per_parameter() {
+    use om_engine::live::{MAX_CONTROL_MESSAGES_PER_FRAME, coalesce};
+    use om_show::control::{Action, ControlMessage};
+    let set = |p: ParamId, v: f64| ControlMessage::Set {
+        param: p,
+        value: ParamValue::Float(v),
+    };
+    let msgs = vec![
+        set(ParamId::MasterOpacity, 0.1),
+        ControlMessage::Action(Action::Play),
+        set(ParamId::MasterOpacity, 0.2),
+        set(ParamId::MasterBlackout, 1.0),
+        set(ParamId::MasterOpacity, 0.3),
+    ];
+    assert_eq!(
+        coalesce(msgs),
+        vec![
+            ControlMessage::Action(Action::Play),
+            set(ParamId::MasterBlackout, 1.0),
+            set(ParamId::MasterOpacity, 0.3),
+        ]
+    );
+    let flood = vec![ControlMessage::Action(Action::Play); 10_000];
+    assert_eq!(coalesce(flood).len(), MAX_CONTROL_MESSAGES_PER_FRAME);
 }

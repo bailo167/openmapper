@@ -1,0 +1,120 @@
+# Release packaging on all three desktop OSes, reused by ci.yml (on demand)
+# and release.yml (tags). Each job builds the pinned LGPL FFmpeg with
+# tools/ffmpeg/build.sh (cached by recipe hash), builds the archive with
+# `cargo xtask dist` — which refuses anything that fails the FFmpeg release
+# policy — and smoke-tests the unpacked archive from a fresh directory with
+# no other FFmpeg on the machine (docs/release/checklist.md, D-031).
+#
+# Code signing runs only when the publisher's credentials exist as
+# repository secrets (docs/release/signing.md); without them the archives
+# are unsigned and the SHA256SUMS are signed keylessly by release.yml.
+name: package
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  # The smoke test must render through a GPU (lavapipe, WARP, Metal).
+  OM_REQUIRE_GPU: "1"
+  FFMPEG_DIR: ${{ github.workspace }}/target/ffmpeg
+
+jobs:
+  package:
+    name: package (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      HAVE_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE_P12 != '' }}
+      HAVE_WINDOWS_CERT: ${{ secrets.WINDOWS_CERTIFICATE_PFX != '' }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: FFmpeg clone and objects outside target/ (not carried by rust-cache)
+        shell: bash
+        run: echo "OM_FFMPEG_BUILD_DIR=${{ runner.temp }}/ffmpeg-build" >> "$GITHUB_ENV"
+
+      # No distribution FFmpeg packages: the archive must bring its own.
+      - name: system libraries (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y pkg-config clang nasm libasound2-dev libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev libxcb1-dev libxcb-randr0-dev mesa-vulkan-drivers
+      - name: MSYS2 toolchain for the FFmpeg build (Windows)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: >-
+            git make diffutils
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-nasm
+      - name: libclang for the FFmpeg bindings (Windows)
+        if: runner.os == 'Windows'
+        run: echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
+
+      - name: cached FFmpeg build
+        id: ffmpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: target/ffmpeg
+          key: ffmpeg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/ffmpeg/**') }}
+      - name: build the LGPL FFmpeg (Linux, with the source archive)
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true' && runner.os == 'Linux'
+        run: OM_FFMPEG_SOURCE_ARCHIVE=1 tools/ffmpeg/build.sh target/ffmpeg
+      - name: build the LGPL FFmpeg (macOS)
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true' && runner.os == 'macOS'
+        run: tools/ffmpeg/build.sh target/ffmpeg
+      - name: build the LGPL FFmpeg (Windows, MSYS2)
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true' && runner.os == 'Windows'
+        shell: msys2 {0}
+        run: tools/ffmpeg/build.sh target/ffmpeg
+
+      - name: provenance over the full history
+        shell: bash
+        run: |
+          mkdir -p target/dist
+          cargo xtask provenance --history 2>&1 | tee target/dist/PROVENANCE.txt
+
+      - name: enable macOS code signing and notarisation
+        if: runner.os == 'macOS' && env.HAVE_APPLE_CERT == 'true'
+        run: echo "OM_SIGN_COMMAND=bash .github/scripts/sign-macos.sh" >> "$GITHUB_ENV"
+      - name: enable Windows Authenticode signing
+        if: runner.os == 'Windows' && env.HAVE_WINDOWS_CERT == 'true'
+        run: echo "OM_SIGN_COMMAND=pwsh -File .github/scripts/sign-windows.ps1" >> $env:GITHUB_ENV
+
+      - name: build the release archive
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          WINDOWS_CERTIFICATE_PFX: ${{ secrets.WINDOWS_CERTIFICATE_PFX }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: cargo xtask dist
+      - name: smoke-test the unpacked archive
+        shell: bash
+        run: cargo xtask smoke target/dist/openmapper-*.tar.gz
+
+      - name: name the checksum file per OS (merged by release.yml)
+        shell: bash
+        run: mv target/dist/SHA256SUMS "target/dist/SHA256SUMS.${{ runner.os }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openmapper-${{ runner.os }}
+          path: |
+            target/dist/*.tar.gz
+            target/dist/SHA256SUMS.*
+            target/dist/PROVENANCE.txt
+          retention-days: 14

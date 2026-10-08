@@ -1,0 +1,19 @@
+[package]
+name = "om-spout"
+description = "OpenMapper Spout adapter (Windows): send and receive Spout 2 senders"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+om-media-core.workspace = true
+om-project.workspace = true
+half.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+
+[lints]
+workspace = true

@@ -12,6 +12,7 @@
 //! homogeneous column vectors `(x, y, 1)`.
 
 mod homography;
+pub mod obj;
 mod point;
 
 pub use homography::{GeomError, Homography, quad_map, triangle_map};

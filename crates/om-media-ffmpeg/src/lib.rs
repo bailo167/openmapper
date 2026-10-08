@@ -8,12 +8,18 @@
 //! diagnostics and the release audit can check it (docs/media/ffmpeg.md).
 
 mod audio;
+mod interrupt;
+mod live;
+pub mod policy;
+mod sink;
 mod video;
 
 #[cfg(feature = "fixtures")]
 pub mod fixtures;
 
 pub use audio::FfmpegAudio;
+pub use live::{Camera, FfmpegLive, FfmpegLiveOpener, OPEN_TIMEOUT, READ_TIMEOUT, list_cameras};
+pub use sink::{FfmpegSinkOpener, StreamSink, WRITE_TIMEOUT};
 pub use video::FfmpegVideo;
 
 /// [`om_media_core::VideoOpener`] backed by FFmpeg.
@@ -41,6 +47,16 @@ impl om_media_core::VideoOpener for FfmpegOpener {
 }
 
 use std::sync::OnceLock;
+
+use ffmpeg_next as ff;
+
+/// Opens a local media file allowing only the `file` protocol, so a
+/// playlist-style file cannot make FFmpeg fetch URLs or other local files.
+fn open_file(path: &std::path::Path) -> Result<ff::format::context::Input, ff::Error> {
+    let mut opts = ff::Dictionary::new();
+    opts.set("protocol_whitelist", "file");
+    ff::format::input_with_dictionary(&path, opts)
+}
 
 /// Licence profile of the loaded FFmpeg libraries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,6 +109,8 @@ pub fn init() -> Result<(), String> {
 #[derive(Debug, Clone)]
 pub struct FfmpegInfo {
     pub avcodec_version: String,
+    /// FFmpeg's own version string (`n9.0.2-openmapper` for bundled builds).
+    pub version_info: String,
     pub configuration: String,
     pub licence: LicenceProfile,
 }
@@ -103,6 +121,7 @@ pub fn info() -> FfmpegInfo {
     let configuration = ffmpeg_next::format::configuration().to_owned();
     FfmpegInfo {
         avcodec_version: format!("{}.{}.{}", v >> 16, (v >> 8) & 0xff, v & 0xff),
+        version_info: policy::version_info(),
         licence: classify_configuration(&configuration),
         configuration,
     }

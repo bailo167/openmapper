@@ -1,0 +1,37 @@
+# Parity rows for milestone 7. Status ladder: docs/PLAN.md.
+- feature: dmx.artnet-output
+  priority: P0
+  status: verified
+  tests: [artdmx_golden, artdmx_round_trips_and_bounds_length, malformed_packets_are_rejected, sync_and_poll_golden, pixel_mapping_reaches_artnet_and_sacn_nodes]
+- feature: dmx.sacn-output
+  priority: P0
+  status: verified
+  tests: [full_universe_golden, packets_round_trip_at_every_length, sequence_ordering_follows_the_standard, termination_sends_three_flagged_packets, sender_paces_refreshes_and_terminates_sacn_on_drop]
+- feature: dmx.stream-stability
+  priority: P0
+  status: verified
+  tests: [thirty_minute_stream_is_continuous, sequences_wrap_per_protocol_and_state_stays_bounded, unreachable_destinations_count_errors_without_stopping]
+  notes: 30 minutes at 44 Hz compressed in time over real sockets; real-time soak runs with hardware.
+- feature: dmx.pixel-mapping
+  priority: P0
+  status: verified
+  tests: [pixel_mapping_golden, checkerboard_maps_to_alternating_channels, grid_wiring_orders, slots_wrap_whole_pixels_into_the_next_universe, sampling_averages_footprints_in_linear_light, encodings_and_orders]
+- feature: dmx.fixture-control
+  priority: P1
+  status: verified
+  tests: [every_parameter_round_trips_over_osc_and_oscquery, dmx_nodes_in_use_cannot_be_removed, history_and_replay_are_exact]
+- feature: dmx.node-discovery
+  priority: P1
+  status: verified
+  tests: [artpoll_discovery_collects_replies, poll_reply_round_trips]
+  notes: Against a simulated node.
+- feature: dmx.physical-node
+  priority: P0
+  status: implemented-unverified
+  tests: []
+  notes: Pending a physical Art-Net/sACN node and LED fixture (human test).
+- feature: dmx.input-control
+  priority: P1
+  status: verified
+  tests: [input_receives_artnet_and_sacn_and_skips_junk, values_scale_and_only_changes_are_sent, sixteen_bit_channels_use_coarse_then_fine, cues_fire_on_rising_edges_only, learn_binds_the_channel_that_moves_over_the_network]
+  notes: Art-Net/sACN input bound to parameters and cues, 8/16-bit, learn (D-028). Newest packet wins; no source merging. Loopback-verified; a physical console test rides with the node test.

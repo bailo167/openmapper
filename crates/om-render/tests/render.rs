@@ -54,6 +54,7 @@ fn project(w: u32, h: u32, surfaces: Vec<Surface>) -> Project {
             name: format!("{pattern:?}"),
             source: MediaSource::Pattern { pattern },
             playback: Default::default(),
+            plugins: Vec::new(),
             extensions: Default::default(),
         });
     }
@@ -745,6 +746,7 @@ fn shader_generator_media_renders() {
             inputs,
         },
         playback: Default::default(),
+        plugins: Vec::new(),
         extensions: Default::default(),
     });
     pr.surfaces.push(surface(1, Shape::full_quad(), shader_id));
@@ -761,6 +763,49 @@ fn shader_generator_media_renders() {
     // half-float round trip.
     assert_eq!((px[0], px[2]), (255, 0), "{:?}", &px[..4]);
     assert!(px[1].abs_diff(128) <= 1, "{:?}", &px[..4]);
+}
+
+#[test]
+fn shader_audio_inputs_see_wave_and_spectrum() {
+    let Some(g) = gpu() else { return };
+    let mut c = Compositor::new(g);
+    let (path, compiled) = corpus_shader("audio.fs");
+    let id = MediaId::from_u128(201);
+    let mut pr = project(16, 4, vec![]);
+    pr.media.push(Media {
+        id,
+        name: "audio".into(),
+        source: MediaSource::Shader {
+            path: path.clone(),
+            inputs: Default::default(),
+        },
+        playback: Default::default(),
+        plugins: Vec::new(),
+        extensions: Default::default(),
+    });
+    pr.surfaces.push(surface(1, Shape::full_quad(), id));
+    c.set_shader(&path, &compiled);
+    // No audio yet: blank textures.
+    c.render(&pr).unwrap();
+    let px = c.read_rgba8().unwrap();
+    assert_eq!(&px[..3], &[0, 0, 0], "blank before audio");
+    // Left channel (row 0) is a ramp; the right channel must not be read.
+    let ramp: Vec<f32> = (0..16).map(|i| i as f32 / 15.0).collect();
+    let wave = vec![ramp.iter().map(|v| 2.0 * v - 1.0).collect(), vec![1.0; 16]];
+    let fft = vec![ramp.clone(), vec![1.0; 16]];
+    c.set_audio(om_render::audio::AudioFrame {
+        wave: &wave,
+        fft: &fft,
+    });
+    c.render(&pr).unwrap();
+    let px = c.read_rgba8().unwrap();
+    for (i, p) in px.as_chunks::<4>().0[..16].iter().enumerate() {
+        let want = (ramp[i] * 255.0).round() as u8;
+        assert!(p[0].abs_diff(want) <= 1, "wave {i}: {p:?} vs {want}");
+        assert!(p[1].abs_diff(want) <= 1, "fft {i}: {p:?} vs {want}");
+        // IMG_SIZE(spectrum).x / 1024 = 16 / 1024 → code 4.
+        assert!(p[2].abs_diff(4) <= 1, "size {i}: {p:?}");
+    }
 }
 
 #[test]
@@ -820,4 +865,53 @@ fn master_opacity_and_blackout_scale_the_output() {
             .iter()
             .all(|p| p[..3] == [0, 0, 0])
     );
+}
+
+/// Publishing readback: a frame presented into an 8-bit texture comes back
+/// through the non-blocking ring and matches the blocking readback.
+#[test]
+fn frame_reader_returns_presented_frames() {
+    let Some(g) = gpu() else { return };
+    let (w, h) = (70, 45);
+    let pr = project(w, h, vec![surface(1, Shape::default(), GRID)]);
+    let mut c = Compositor::new(g.clone());
+    let fx = Fixture::new((64, 48));
+    let expected = fx.gpu_render(&mut c, &pr);
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let texture = g.device().create_texture(&wgpu::TextureDescriptor {
+        label: Some("test output"),
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut reader = om_render::FrameReader::new(g.device(), g.queue());
+    for round in 0..5 {
+        let mut enc = g
+            .device()
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        c.present(&mut enc, &view, format).unwrap();
+        g.queue().submit([enc.finish()]);
+        reader.capture(&texture);
+        let frame = reader.wait().expect("a frame after waiting");
+        assert_eq!((frame.width(), frame.height()), (w, h));
+        let d = diff(frame.rgba8(), &expected, |_| true);
+        assert!(d.max <= 1, "round {round}: {d:?}");
+    }
+    // Several captures before collecting: only the newest is returned and
+    // nothing is lost track of.
+    for _ in 0..3 {
+        reader.capture(&texture);
+    }
+    assert!(reader.wait().is_some());
+    assert!(reader.poll().is_none());
+    assert_eq!(reader.skipped, 0);
 }

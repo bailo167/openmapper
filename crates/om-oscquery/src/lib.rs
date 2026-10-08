@@ -17,6 +17,8 @@ use std::sync::{Arc, RwLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+pub mod http;
+
 use om_project::{ParamKind, ParamValue};
 use serde_json::{Map, Value, json};
 
@@ -157,6 +159,7 @@ pub fn respond(snapshot: &Snapshot, host_info: &Value, url: &str) -> (u16, Value
 /// The running HTTP service.
 pub struct OscQueryServer {
     port: u16,
+    ip: std::net::IpAddr,
     snapshot: Arc<RwLock<Snapshot>>,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
@@ -179,12 +182,29 @@ impl OscQueryServer {
         name: &str,
         advertise: bool,
     ) -> Result<Self, OscQueryError> {
+        Self::start_on(port, osc_port, name, advertise, false)
+    }
+
+    /// As [`Self::start`]; with `network` it listens on every interface
+    /// (otherwise loopback only) and only then advertises over mDNS.
+    pub fn start_on(
+        port: u16,
+        osc_port: u16,
+        name: &str,
+        advertise: bool,
+        network: bool,
+    ) -> Result<Self, OscQueryError> {
+        let ip = if network {
+            std::net::Ipv4Addr::UNSPECIFIED
+        } else {
+            std::net::Ipv4Addr::LOCALHOST
+        };
         let err = |m: String| OscQueryError { port, message: m };
         // std's listener sets SO_REUSEADDR on Unix; also retry briefly while
         // a just-stopped server's accept thread still holds the port.
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
         let listener = loop {
-            match std::net::TcpListener::bind(("0.0.0.0", port)) {
+            match std::net::TcpListener::bind((ip, port)) {
                 Ok(l) => break l,
                 Err(e)
                     if e.kind() == std::io::ErrorKind::AddrInUse
@@ -195,13 +215,8 @@ impl OscQueryServer {
                 Err(e) => return Err(err(e.to_string())),
             }
         };
-        let server =
-            tiny_http::Server::from_listener(listener, None).map_err(|e| err(e.to_string()))?;
-        let port = server
-            .server_addr()
-            .to_ip()
-            .map(|a| a.port())
-            .ok_or_else(|| err("no TCP address".into()))?;
+        let addr = listener.local_addr().map_err(|e| err(e.to_string()))?;
+        let port = addr.port();
         let snapshot = Arc::new(RwLock::new(Snapshot::default()));
         let stop = Arc::new(AtomicBool::new(false));
         let host_info = json!({
@@ -213,14 +228,25 @@ impl OscQueryServer {
                 "TYPE": true, "LISTEN": false, "PATH_CHANGED": false
             }
         });
-        let (snap, s) = (Arc::clone(&snapshot), Arc::clone(&stop));
+        let snap = Arc::clone(&snapshot);
+        let handler: Arc<http::Handler> = Arc::new(move |target: &str| {
+            let (status, body) = match snap.read() {
+                Ok(s) => respond(&s, &host_info, target),
+                Err(_) => (500, json!({ "error": "unavailable" })),
+            };
+            (status, (!body.is_null()).then(|| body.to_string()))
+        });
+        let s = Arc::clone(&stop);
         let thread = std::thread::Builder::new()
             .name("om-oscquery".into())
-            .spawn(move || serve(&server, &snap, &host_info, &s))
+            .spawn(move || http::serve(&listener, &handler, &s))
             .ok();
-        let mdns = advertise.then(|| advertise_service(name, port)).flatten();
+        let mdns = (advertise && network)
+            .then(|| advertise_service(name, port))
+            .flatten();
         Ok(Self {
             port,
+            ip: addr.ip(),
             snapshot,
             stop,
             thread,
@@ -233,39 +259,17 @@ impl OscQueryServer {
         self.port
     }
 
+    /// Address listened on (`127.0.0.1` unless started for the network).
+    #[must_use]
+    pub fn ip(&self) -> std::net::IpAddr {
+        self.ip
+    }
+
     /// Replaces the described namespace and values.
     pub fn update(&self, snapshot: Snapshot) {
         if let Ok(mut s) = self.snapshot.write() {
             *s = snapshot;
         }
-    }
-}
-
-fn serve(
-    server: &tiny_http::Server,
-    snapshot: &RwLock<Snapshot>,
-    host_info: &Value,
-    stop: &AtomicBool,
-) {
-    while !stop.load(Ordering::Relaxed) {
-        let Ok(Some(request)) = server.recv_timeout(Duration::from_millis(100)) else {
-            continue;
-        };
-        let (status, body) = match snapshot.read() {
-            Ok(s) => respond(&s, host_info, request.url()),
-            Err(_) => (500, json!({ "error": "unavailable" })),
-        };
-        let text = if body.is_null() {
-            String::new()
-        } else {
-            body.to_string()
-        };
-        let mut response = tiny_http::Response::from_string(text).with_status_code(status);
-        if let Ok(h) = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
-        {
-            response.add_header(h);
-        }
-        let _ = request.respond(response);
     }
 }
 
@@ -286,13 +290,6 @@ impl Drop for OscQueryServer {
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
-        // tiny_http unblocks its accept thread by connecting to the listen
-        // address; with 0.0.0.0 that fails on Windows and the port stays
-        // bound. Connect via loopback so the accept thread exits.
-        let _ = std::net::TcpStream::connect_timeout(
-            &std::net::SocketAddr::from(([127, 0, 0, 1], self.port)),
-            Duration::from_millis(200),
-        );
         if let Some(d) = self.mdns.take() {
             let _ = d.shutdown();
         }

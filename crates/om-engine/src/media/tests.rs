@@ -140,6 +140,7 @@ fn media(id: u128, source: MediaSource, playback: Playback) -> Media {
         name: "m".into(),
         source,
         playback,
+        plugins: Vec::new(),
         extensions: Default::default(),
     }
 }

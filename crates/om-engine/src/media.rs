@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 
 use om_audio::{Mixer, Voice};
 use om_media_core::{
-    AudioOpener, AudioPlayer, DEFAULT_QUEUE, ImageSequence, StillImage, VideoOpener, VideoPlayer,
+    AudioOpener, AudioPlayer, DEFAULT_QUEUE, ImageSequence, LiveFeed, LiveOpener, LiveState,
+    StillImage, VideoOpener, VideoPlayer,
 };
 use om_project::{MediaSource, Playback, Project};
 use om_time::{RationalTime, Speed};
@@ -221,6 +222,11 @@ enum Content {
         duration: Option<RationalTime>,
         shown: Option<RationalTime>,
     },
+    /// A live feed; `seen` is the last frame sequence uploaded.
+    Live {
+        feed: Box<LiveFeed>,
+        seen: u64,
+    },
 }
 
 struct Entry {
@@ -244,6 +250,7 @@ pub struct MediaStatus {
 /// Keeps decoded media in sync with the project and the show clock.
 pub struct MediaRuntime {
     opener: Option<Arc<dyn VideoOpener>>,
+    live: Option<Arc<dyn LiveOpener>>,
     audio: Option<AudioSetup>,
     entries: HashMap<MediaId, Entry>,
     last_retry: Option<Instant>,
@@ -262,7 +269,8 @@ struct ShaderEntry {
 const SHADER_CHECK_INTERVAL: Duration = Duration::from_millis(300);
 
 fn compile_shader(path: &Path) -> Result<Arc<om_isf::Compiled>, String> {
-    let src = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let src = om_project::store::read_limited_string(path, om_isf::MAX_SOURCE_BYTES as u64)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
     let doc = om_isf::parse(&src).map_err(|e| format!("{}: {e}", path.display()))?;
     om_isf::compile(&doc)
         .map(Arc::new)
@@ -295,12 +303,20 @@ impl MediaRuntime {
     pub fn with_audio(opener: Option<Arc<dyn VideoOpener>>, audio: Option<AudioSetup>) -> Self {
         Self {
             opener,
+            live: None,
             audio,
             entries: HashMap::new(),
             shaders: HashMap::new(),
             last_shader_check: None,
             last_retry: None,
         }
+    }
+
+    /// Enables live inputs (cameras, streams, other applications).
+    #[must_use]
+    pub fn with_live(mut self, live: Option<Arc<dyn LiveOpener>>) -> Self {
+        self.live = live;
+        self
     }
 
     /// Brings media in line with `project` and returns the pixels to show at
@@ -366,6 +382,23 @@ impl MediaRuntime {
                             .unwrap_or_else(|| "ISF shader".into())
                     }),
                     position: Some(media_time(show, e.restart_at, playback, None)),
+                    duration: None,
+                }
+            }
+            Ok(Content::Live { feed, .. }) => {
+                let stats = feed.stats();
+                let (error, summary) = match feed.state() {
+                    LiveState::Retrying { error } => (Some(error), None),
+                    LiveState::Connecting => (None, Some("connecting…".to_owned())),
+                    LiveState::Live => (
+                        None,
+                        Some(format!("{} · {:.1} fps", stats.description, stats.fps)),
+                    ),
+                };
+                MediaStatus {
+                    error,
+                    summary,
+                    position: None,
                     duration: None,
                 }
             }
@@ -465,6 +498,17 @@ impl MediaRuntime {
                     changes.upload.push((m.id, Arc::clone(&f.image)));
                 }
             }
+            if let Ok(Content::Live { feed, seen }) = &mut entry.content {
+                let frame = match wait {
+                    // Offline renders wait for a first picture.
+                    Some(timeout) if *seen == 0 => feed.wait_newer_than(0, timeout),
+                    _ => feed.newer_than(*seen),
+                };
+                if let Some(f) = frame {
+                    *seen = f.seq;
+                    changes.upload.push((m.id, f.image));
+                }
+            }
         }
         self.update_shaders(project, project_dir, &mut changes);
         for m in &project.media {
@@ -559,15 +603,14 @@ impl MediaRuntime {
         }
     }
 
-    /// Hands the mixer one voice per audible soundtrack. Only normal speed
-    /// is audible (D-015).
+    /// Hands the mixer one voice per audible soundtrack (varispeed at
+    /// speeds other than 1; reverse is silent, D-027).
     fn publish_voices(&self, project: &Project) {
         let Some(setup) = &self.audio else { return };
         let rate = setup.mixer.rate();
         let voices = project
             .media
             .iter()
-            .filter(|m| m.playback.speed == Speed::NORMAL)
             .filter_map(|m| {
                 let e = self.entries.get(&m.id)?;
                 let Ok(Content::Player { audio: Some(a), .. }) = &e.content else {
@@ -579,6 +622,7 @@ impl MediaRuntime {
                     origin: i64::try_from(e.restart_at.to_ticks_floor(i128::from(rate)).ok()?)
                         .ok()?,
                     gain: m.playback.volume.get() as f32,
+                    speed: m.playback.speed.as_f64(),
                 })
             })
             .collect();
@@ -588,6 +632,16 @@ impl MediaRuntime {
     fn load(&self, key: &Key) -> Result<Content, String> {
         match (&key.0, &key.1) {
             (MediaSource::Shader { .. }, _) => Ok(Content::Shader),
+            (MediaSource::Live { input }, _) => {
+                let opener = self
+                    .live
+                    .as_ref()
+                    .ok_or("live inputs are not available in this build")?;
+                Ok(Content::Live {
+                    feed: Box::new(LiveFeed::spawn(Arc::clone(opener), input.clone())),
+                    seen: 0,
+                })
+            }
             (MediaSource::Image { .. }, Some(path)) => StillImage::load(path)
                 .map(|i| Content::Still(Arc::new(i)))
                 .map_err(|e| e.to_string()),
@@ -674,6 +728,7 @@ fn entry_key(
 ) -> Key {
     match source {
         MediaSource::Pattern { .. } => (source.clone(), None, canvas, false),
+        MediaSource::Live { .. } => (source.clone(), None, (0, 0), false),
         _ => (
             source.clone(),
             source.path().map(|p| resolve_media_path(project_dir, p)),

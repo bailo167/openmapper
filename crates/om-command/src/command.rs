@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use om_project::{
-    BlendMode, Canvas, DisplayTarget, Effect, Mask, Media, Output, Playback, Project, Shape,
-    Surface,
+    BlendMode, Canvas, DisplayTarget, Effect, MAX_PUBLISH, Mask, Media, Output, Playback, Project,
+    Publish, Shape, Surface,
 };
 use om_types::{MediaId, OutputId, SurfaceId, UnitInterval};
 use serde::{Deserialize, Serialize};
@@ -80,6 +80,15 @@ pub enum Command {
         playback: Playback,
     },
     /// Removes a media item. Rejected while any surface uses it.
+    /// Replaces a media item's plugin filters.
+    SetMediaPlugins {
+        id: MediaId,
+        plugins: Vec<om_project::PluginUse>,
+    },
+    /// Points media at new files (relinking missing media), as one step.
+    RelinkMedia {
+        changes: Vec<MediaPath>,
+    },
     RemoveMedia {
         id: MediaId,
     },
@@ -105,6 +114,21 @@ pub enum Command {
     SetOutputDisplay {
         id: OutputId,
         display: Option<DisplayTarget>,
+    },
+    /// Replaces where the output's frames are published.
+    SetOutputPublish {
+        id: OutputId,
+        publish: Vec<Publish>,
+    },
+    /// Replaces an output's region, corner pin and soft edges.
+    SetOutputMapping {
+        id: OutputId,
+        mapping: om_project::OutputMapping,
+    },
+    /// Sets (`Some`) or removes (`None`) an output's 3-D projection.
+    SetOutputProjection {
+        id: OutputId,
+        projection: Option<om_project::Projection>,
     },
     SetMaster {
         master: om_project::Master,
@@ -133,11 +157,42 @@ pub enum Command {
     RemoveModulator {
         id: om_types::ModulatorId,
     },
+    /// Inserts a DMX node, or replaces the node with the same id.
+    PutDmxNode {
+        node: om_project::dmx::DmxNode,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        index: Option<usize>,
+    },
+    /// Removes a DMX node no fixture uses.
+    RemoveDmxNode {
+        id: om_types::DmxNodeId,
+    },
+    /// Inserts a fixture, or replaces the fixture with the same id.
+    PutFixture {
+        fixture: om_project::dmx::Fixture,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        index: Option<usize>,
+    },
+    RemoveFixture {
+        id: om_types::FixtureId,
+    },
+    /// DMX refresh rate (packets per second per universe, 1–44).
+    SetDmxRate {
+        rate: u32,
+    },
     /// Sets (`Some`) or removes (`None`) a project-level extension payload.
     SetExtension {
         key: String,
         value: Option<serde_json::Value>,
     },
+}
+
+/// A media item's new file or folder path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MediaPath {
+    pub id: MediaId,
+    pub path: String,
 }
 
 /// What changed. Emitted to observers (UI, OSCQuery, …) after each command.
@@ -159,6 +214,7 @@ pub enum Event {
     MasterChanged,
     ControlsChanged,
     ShowChanged,
+    DmxChanged,
     ExtensionChanged { key: String },
 }
 
@@ -431,6 +487,56 @@ impl Command {
                     events: vec![Event::MediaChanged { id: *id }],
                 })
             }
+            Self::SetMediaPlugins { id, plugins } => {
+                let at = media_index(project, *id)?;
+                if plugins.len() > om_project::MAX_PLUGINS {
+                    return Err(CommandError::Invalid("too many plugins".into()));
+                }
+                let old = std::mem::replace(&mut project.media[at].plugins, plugins.clone());
+                Ok(Applied {
+                    inverse: Self::SetMediaPlugins {
+                        id: *id,
+                        plugins: old,
+                    },
+                    events: vec![Event::MediaChanged { id: *id }],
+                })
+            }
+            Self::RelinkMedia { changes } => {
+                // Validate everything before changing anything.
+                for c in changes {
+                    let at = media_index(project, c.id)?;
+                    if project.media[at].source.path().is_none() {
+                        return Err(CommandError::Invalid(format!(
+                            "media {} has no file to relink",
+                            c.id
+                        )));
+                    }
+                    if c.path.trim().is_empty() {
+                        return Err(CommandError::Invalid("empty media path".into()));
+                    }
+                }
+                let mut inverse = Vec::with_capacity(changes.len());
+                let mut events = Vec::with_capacity(changes.len());
+                for c in changes {
+                    let at = media_index(project, c.id)?;
+                    let old = project.media[at]
+                        .source
+                        .path()
+                        .unwrap_or_default()
+                        .to_owned();
+                    project.media[at].source = project.media[at].source.with_path(&c.path);
+                    inverse.push(MediaPath {
+                        id: c.id,
+                        path: old,
+                    });
+                    events.push(Event::MediaChanged { id: c.id });
+                }
+                inverse.reverse();
+                Ok(Applied {
+                    inverse: Self::RelinkMedia { changes: inverse },
+                    events,
+                })
+            }
             Self::RemoveMedia { id } => {
                 let at = media_index(project, *id)?;
                 if let Some(s) = project.surfaces.iter().find(|s| s.media == Some(*id)) {
@@ -521,6 +627,52 @@ impl Command {
                     events: vec![Event::OutputChanged { id: *id }],
                 })
             }
+            Self::SetOutputPublish { id, publish } => {
+                let at = output_index(project, *id)?;
+                if publish.len() > MAX_PUBLISH {
+                    return Err(CommandError::Invalid(format!(
+                        "more than {MAX_PUBLISH} publish targets"
+                    )));
+                }
+                for p in publish {
+                    p.validate().map_err(CommandError::Invalid)?;
+                }
+                let old = std::mem::replace(&mut project.outputs[at].publish, publish.clone());
+                Ok(Applied {
+                    inverse: Self::SetOutputPublish {
+                        id: *id,
+                        publish: old,
+                    },
+                    events: vec![Event::OutputChanged { id: *id }],
+                })
+            }
+            Self::SetOutputMapping { id, mapping } => {
+                let at = output_index(project, *id)?;
+                mapping.validate().map_err(CommandError::Invalid)?;
+                let old = std::mem::replace(&mut project.outputs[at].mapping, mapping.clone());
+                Ok(Applied {
+                    inverse: Self::SetOutputMapping {
+                        id: *id,
+                        mapping: old,
+                    },
+                    events: vec![Event::OutputChanged { id: *id }],
+                })
+            }
+            Self::SetOutputProjection { id, projection } => {
+                let at = output_index(project, *id)?;
+                if let Some(p) = projection {
+                    p.validate().map_err(CommandError::Invalid)?;
+                }
+                let old =
+                    std::mem::replace(&mut project.outputs[at].projection, projection.clone());
+                Ok(Applied {
+                    inverse: Self::SetOutputProjection {
+                        id: *id,
+                        projection: old,
+                    },
+                    events: vec![Event::OutputChanged { id: *id }],
+                })
+            }
             Self::SetMaster { master } => {
                 let old = std::mem::replace(&mut project.master, *master);
                 Ok(Applied {
@@ -529,14 +681,7 @@ impl Command {
                 })
             }
             Self::SetControls { controls } => {
-                for b in &controls.midi {
-                    if !(1..=16).contains(&b.channel) || b.number > 127 {
-                        return Err(CommandError::Invalid(format!(
-                            "MIDI binding channel {} / number {} out of range",
-                            b.channel, b.number
-                        )));
-                    }
-                }
+                controls.validate().map_err(CommandError::Invalid)?;
                 let old = std::mem::replace(&mut project.controls, controls.clone());
                 Ok(Applied {
                     inverse: Self::SetControls { controls: old },
@@ -643,6 +788,95 @@ impl Command {
                     events: vec![Event::ShowChanged],
                 })
             }
+            Self::PutDmxNode { node, index } => {
+                check_name(&node.name)?;
+                let list = &mut project.dmx.nodes;
+                let inverse = match list.iter().position(|n| n.id == node.id) {
+                    Some(at) => Self::PutDmxNode {
+                        node: std::mem::replace(&mut list[at], node.clone()),
+                        index: Some(at),
+                    },
+                    None => {
+                        if list.len() >= om_project::dmx::MAX_NODES {
+                            return Err(CommandError::Invalid("too many DMX nodes".into()));
+                        }
+                        insert_at(list, node.clone(), *index)?;
+                        Self::RemoveDmxNode { id: node.id }
+                    }
+                };
+                Ok(Applied {
+                    inverse,
+                    events: vec![Event::DmxChanged],
+                })
+            }
+            Self::RemoveDmxNode { id } => {
+                if let Some(f) = project.dmx.fixtures.iter().find(|f| f.node == *id) {
+                    return Err(CommandError::Invalid(format!(
+                        "DMX node {id} is still used by fixture \"{}\"",
+                        f.name
+                    )));
+                }
+                let list = &mut project.dmx.nodes;
+                let at = list.iter().position(|n| n.id == *id).ok_or_else(|| {
+                    CommandError::Invalid(format!("DMX node {id} does not exist"))
+                })?;
+                let node = list.remove(at);
+                Ok(Applied {
+                    inverse: Self::PutDmxNode {
+                        node,
+                        index: Some(at),
+                    },
+                    events: vec![Event::DmxChanged],
+                })
+            }
+            Self::PutFixture { fixture, index } => {
+                fixture.validate().map_err(CommandError::Invalid)?;
+                let list = &mut project.dmx.fixtures;
+                let inverse = match list.iter().position(|f| f.id == fixture.id) {
+                    Some(at) => Self::PutFixture {
+                        fixture: std::mem::replace(&mut list[at], fixture.clone()),
+                        index: Some(at),
+                    },
+                    None => {
+                        if list.len() >= om_project::dmx::MAX_FIXTURES {
+                            return Err(CommandError::Invalid("too many fixtures".into()));
+                        }
+                        insert_at(list, fixture.clone(), *index)?;
+                        Self::RemoveFixture { id: fixture.id }
+                    }
+                };
+                Ok(Applied {
+                    inverse,
+                    events: vec![Event::DmxChanged],
+                })
+            }
+            Self::RemoveFixture { id } => {
+                let list = &mut project.dmx.fixtures;
+                let at = list
+                    .iter()
+                    .position(|f| f.id == *id)
+                    .ok_or_else(|| CommandError::Invalid(format!("fixture {id} does not exist")))?;
+                let fixture = list.remove(at);
+                Ok(Applied {
+                    inverse: Self::PutFixture {
+                        fixture,
+                        index: Some(at),
+                    },
+                    events: vec![Event::DmxChanged],
+                })
+            }
+            Self::SetDmxRate { rate } => {
+                if !om_project::dmx::DMX_RATES.contains(rate) {
+                    return Err(CommandError::Invalid(format!(
+                        "DMX rate {rate} is not 1–44"
+                    )));
+                }
+                let old = std::mem::replace(&mut project.dmx.rate, *rate);
+                Ok(Applied {
+                    inverse: Self::SetDmxRate { rate: old },
+                    events: vec![Event::DmxChanged],
+                })
+            }
             Self::SetExtension { key, value } => {
                 if key.is_empty() {
                     return Err(CommandError::EmptyExtensionKey);
@@ -680,11 +914,16 @@ impl Command {
             Self::SetMediaPlayback { .. } => "Playback Settings",
             Self::SetMediaSource { .. } => "Media Source",
             Self::RemoveMedia { .. } => "Remove Media",
+            Self::RelinkMedia { .. } => "Relink Media",
+            Self::SetMediaPlugins { .. } => "Plugins",
             Self::SetCanvas { .. } => "Canvas Size",
             Self::AddOutput { .. } => "Add Output",
             Self::RemoveOutput { .. } => "Remove Output",
             Self::UpdateOutput { .. } => "Edit Output",
             Self::SetOutputDisplay { .. } => "Assign Display",
+            Self::SetOutputPublish { .. } => "Publish Settings",
+            Self::SetOutputMapping { .. } => "Output Mapping",
+            Self::SetOutputProjection { .. } => "3D Projection",
             Self::SetExtension { .. } => "Edit Extension",
             Self::SetMaster { .. } => "Master",
             Self::SetControls { .. } => "Control Settings",
@@ -694,6 +933,11 @@ impl Command {
             Self::RemoveTimeline { .. } => "Remove Timeline",
             Self::PutModulator { .. } => "Edit Modulator",
             Self::RemoveModulator { .. } => "Remove Modulator",
+            Self::PutDmxNode { .. } => "Edit DMX Node",
+            Self::RemoveDmxNode { .. } => "Remove DMX Node",
+            Self::PutFixture { .. } => "Edit Fixture",
+            Self::RemoveFixture { .. } => "Remove Fixture",
+            Self::SetDmxRate { .. } => "DMX Rate",
         }
     }
 }

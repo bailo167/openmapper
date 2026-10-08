@@ -16,3 +16,23 @@ entries:
     name: OpenMapper ISF conformance corpus (original, first-party)
     licence: Apache-2.0
     source: written for OpenMapper; no third-party shader code
+  - path: tools/ffmpeg/*
+    name: FFmpeg (shared libraries bundled with binary releases; built, not vendored)
+    licence: LGPL-2.1-or-later
+    source: https://github.com/FFmpeg/FFmpeg (tag n9.0.2, commit 946fcce07b6dcd0331c8cc609192aeff5e1924f8)
+    notes: >-
+      tools/ffmpeg/build.sh and components.txt are OpenMapper's (Apache-2.0)
+      recipe for the LGPL FFmpeg that `cargo xtask dist` bundles (D-031):
+      no --enable-gpl, no --enable-nonfree, no external libraries, the
+      component list in components.txt. No FFmpeg source is in this
+      repository; each release attaches the complete corresponding source
+      archive and ships COPYING.LGPLv2.1, LICENSE.md and SOURCE.txt in
+      ffmpeg/ inside the archive.
+  - path: crates/om-syphon/vendor/syphon/*
+    name: Syphon Framework (source; built as a static library on macOS)
+    licence: BSD-3-Clause AND BSD-2-Clause
+    source: https://github.com/Syphon/Syphon-Framework (commit f4761677a45b8034a3c2069ec0f3d2553da81fba)
+    notes: >-
+      Unmodified except SyphonServerRendererMetal.m, which compiles its
+      Metal shaders from embedded source when no framework bundle exists
+      (marked "OpenMapper patch"). Licence text in License.txt alongside.

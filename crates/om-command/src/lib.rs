@@ -13,7 +13,7 @@ mod command;
 mod document;
 pub mod params;
 
-pub use command::{Applied, Command, CommandError, Event};
+pub use command::{Applied, Command, CommandError, Event, MediaPath};
 pub use document::{CommandResult, Document, HistoryError};
 
 pub use om_project::Project;

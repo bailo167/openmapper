@@ -107,3 +107,50 @@ fn served_over_http_with_live_updates() {
     let again = OscQueryServer::start(port, 9999, "OpenMapper test", false).unwrap();
     assert_eq!(again.port(), port);
 }
+
+#[test]
+fn hostile_clients_are_bounded() {
+    use std::time::{Duration, Instant};
+    let server = OscQueryServer::start(0, 9999, "OpenMapper test", false).unwrap();
+    assert!(server.ip().is_loopback(), "local only unless enabled");
+    server.update(snapshot());
+    let port = server.port();
+    let raw = |request: &[u8]| {
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let _ = s.write_all(request);
+        let mut text = String::new();
+        let _ = s.read_to_string(&mut text);
+        text
+    };
+    // Endless headers: refused at the cap, not buffered forever.
+    let mut big = b"GET / HTTP/1.1\r\n".to_vec();
+    // Just over the cap, so the server consumes it all (no TCP reset).
+    big.extend(std::iter::repeat_n(b'x', http::MAX_REQUEST_BYTES + 500));
+    assert!(raw(&big).starts_with("HTTP/1.1 431"));
+    assert!(raw(b"POST / HTTP/1.1\r\n\r\n").starts_with("HTTP/1.1 405"));
+    assert!(raw(b"garbage\r\n\r\n").starts_with("HTTP/1.1 400"));
+    // Idle connections beyond the cap are closed, and the server still
+    // answers once their deadline passes.
+    let idle: Vec<_> = (0..http::MAX_CONNECTIONS + 4)
+        .map(|_| std::net::TcpStream::connect(("127.0.0.1", port)).unwrap())
+        .collect();
+    let t = Instant::now();
+    loop {
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let _ = write!(s, "GET /?HOST_INFO HTTP/1.1\r\n\r\n");
+        let mut text = String::new();
+        let _ = s.read_to_string(&mut text);
+        if text.starts_with("HTTP/1.1 200") {
+            break;
+        }
+        assert!(t.elapsed() < Duration::from_secs(10), "server stays usable");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(
+        t.elapsed() < http::REQUEST_DEADLINE * 3,
+        "slow clients time out: {:?}",
+        t.elapsed()
+    );
+    drop(idle);
+}

@@ -8,6 +8,7 @@
 //!
 //! This crate defines *data* only. Mutations go through `om-command`.
 
+pub mod dmx;
 mod migrate;
 pub mod param;
 mod schema;
@@ -17,13 +18,17 @@ pub mod store;
 pub use migrate::{CURRENT_VERSION, FORMAT};
 pub use param::{ParamId, ParamKind, ParamValue};
 pub use schema::{
-    BlendMode, Canvas, DisplayTarget, Effect, EffectKind, Extensions, MAX_BLUR_RADIUS, MAX_EFFECTS,
-    MAX_MASK_POINTS, MAX_MESH_DIVISIONS, Mask, MaskPoint, Media, MediaSource, Output, PatternKind,
-    Playback, Project, ShaderValue, Shape, Surface, Timebase, line_quad,
+    BlendMode, CalibrationPoint, Canvas, DisplayTarget, Effect, EffectKind, Extensions, LiveInput,
+    MAX_BLUR_RADIUS, MAX_CALIBRATION_POINTS, MAX_EFFECTS, MAX_MASK_POINTS, MAX_MESH_DIVISIONS,
+    MAX_PLUGINS, MAX_PUBLISH, Mask, MaskPoint, Media, MediaSource, Output, OutputMapping,
+    PUBLISH_SCHEMES, PatternKind, Playback, PluginUse, Project, Projection, ProjectorParams,
+    Publish, STREAM_FPS, STREAM_SCHEMES, ShaderValue, Shape, SoftEdge, StreamCodec, Surface,
+    Timebase, line_quad, validate_stream_url,
 };
 pub use show::{
-    AudioBand, Controls, Cue, CueValue, Ease, Keyframe, LfoShape, Marker, Master, MidiBinding,
-    MidiMessageKind, MidiTarget, ModSource, Modulator, Show, Timeline, Track,
+    AudioBand, Controls, Cue, CueValue, DmxBinding, DmxInput, Ease, Keyframe, LfoShape,
+    MAX_CONTROL_BINDINGS, MAX_INPUT_UNIVERSE, Marker, Master, MidiBinding, MidiMessageKind,
+    MidiTarget, ModSource, Modulator, Show, Timeline, Track,
 };
 
 use std::collections::HashSet;
@@ -73,6 +78,7 @@ impl Project {
             show: Show::default(),
             master: Master::default(),
             controls: Controls::default(),
+            dmx: dmx::Dmx::default(),
             extensions: Extensions::new(),
         }
     }
@@ -161,6 +167,20 @@ impl Project {
             {
                 return invalid(format!("media {} has an empty path", m.id));
             }
+            if let MediaSource::Live { input } = &m.source
+                && let Err(e) = input.validate()
+            {
+                return invalid(format!("media {}: {e}", m.id));
+            }
+            if m.plugins.len() > MAX_PLUGINS {
+                return invalid(format!(
+                    "media {} has more than {MAX_PLUGINS} plugins",
+                    m.id
+                ));
+            }
+            if m.plugins.iter().any(|p| p.path.trim().is_empty()) {
+                return invalid(format!("media {} has a plugin without a file", m.id));
+            }
         }
         for s in &self.surfaces {
             if let Some(mid) = s.media
@@ -174,6 +194,29 @@ impl Project {
             if !seen.insert(o.id) {
                 return invalid(format!("duplicate output id {}", o.id));
             }
+            if o.publish.len() > MAX_PUBLISH {
+                return invalid(format!(
+                    "output {} has more than {MAX_PUBLISH} publish targets",
+                    o.id
+                ));
+            }
+            for p in &o.publish {
+                if let Err(e) = p.validate() {
+                    return invalid(format!("output {}: {e}", o.id));
+                }
+            }
+            if let Err(e) = o.mapping.validate() {
+                return invalid(format!("output {}: {e}", o.id));
+            }
+            if let Some(Err(e)) = o.projection.as_ref().map(Projection::validate) {
+                return invalid(format!("output {}: {e}", o.id));
+            }
+        }
+        if let Err(e) = self.controls.validate() {
+            return invalid(format!("controls: {e}"));
+        }
+        if let Err(e) = self.dmx.validate() {
+            return invalid(format!("DMX: {e}"));
         }
         Ok(())
     }

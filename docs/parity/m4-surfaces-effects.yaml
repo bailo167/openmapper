@@ -30,5 +30,6 @@
   tests: [every_corpus_shader_parses_and_compiles, coordinates_follow_gl_conventions, filter_reads_input_image_in_place, multipass_targets_are_sized_and_readable, persistent_buffers_accumulate_across_frames, shader_generator_media_renders, shader_effect_filters_the_chain]
 - feature: isf.audio-inputs
   priority: P1
-  status: gap
-  notes: audio/audioFFT inputs arrive with audio analysis (milestone 5).
+  status: verified
+  tests: [audio_inputs_bind_as_textures, scope_holds_recent_wave_and_spectrum, shader_audio_inputs_see_wave_and_spectrum]
+  notes: Mixer waveform and spectrum as textures (D-027); MAX is ignored (fixed 512 samples/bins).

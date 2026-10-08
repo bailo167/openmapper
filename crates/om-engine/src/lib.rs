@@ -6,10 +6,21 @@
 //! through a session so persistence and recovery behave identically
 //! everywhere.
 
+mod discovery;
+pub mod dmx_input;
 pub mod live;
 mod media;
+pub mod plugins;
+mod publish;
+pub mod relink;
+pub mod trust;
 
 use std::path::{Path, PathBuf};
+
+pub use discovery::Discovery;
+pub use publish::{PublishRuntime, PublishStatus};
+
+pub use om_media_core::Adapters;
 
 pub use media::{
     AudioSetup, MediaChanges, MediaRuntime, MediaStatus, Transport, audio_clock, media_time,
@@ -129,24 +140,16 @@ impl Session {
         // the replayed work (no torn lines), so a second crash before saving
         // still recovers it.
         let project_id = document.project().project_id;
-        let journal = match Journal::create_with_base(path, project_id, saved_revision) {
-            Ok(mut j) => {
-                let mut ok = true;
-                for r in &replayed {
-                    let entry = JournalEntry {
-                        revision: r.revision,
-                        command: &r.applied,
-                    };
-                    if let Err(e) = j.append(&entry) {
-                        report
-                            .warnings
-                            .push(format!("recovery journal disabled: {e}"));
-                        ok = false;
-                        break;
-                    }
-                }
-                ok.then_some(j)
-            }
+        let entries: Vec<JournalEntry<&Command>> = replayed
+            .iter()
+            .map(|r| JournalEntry {
+                revision: r.revision,
+                command: &r.applied,
+            })
+            .collect();
+        let journal = match Journal::create_with_entries(path, project_id, saved_revision, &entries)
+        {
+            Ok(j) => Some(j),
             Err(e) => {
                 report
                     .warnings

@@ -1,0 +1,60 @@
+# Parity rows for milestone 6. Status ladder: docs/PLAN.md.
+# Hardware-dependent rows stay implemented-unverified until physically tested.
+- feature: live.supervision
+  priority: P0
+  status: verified
+  tests: [retries_failed_opens_then_goes_live, reconnects_after_disconnect_and_keeps_counting, stalled_source_is_reopened, quiet_source_without_stall_limit_stays_open, only_the_newest_frame_is_kept, drop_stops_promptly_even_while_backing_off]
+- feature: live.publish-supervision
+  priority: P0
+  status: verified
+  tests: [sends_each_new_frame_once, newest_frame_wins_when_the_sink_is_busy, fixed_rate_sinks_repeat_the_newest_frame, failed_sink_is_reopened_and_resends, drop_is_prompt]
+- feature: live.stream-in-out
+  priority: P0
+  status: verified
+  platforms: { macos: pass, windows: pass, linux: pass }
+  tests: [lossless_tcp_loopback_is_bit_exact, compatible_udp_stream_round_trips_colour, receiver_and_sender_reconnect_repeatedly, unreachable_stream_reports_and_stops_promptly, cross_process_stream_is_bit_exact, published_output_arrives_as_live_media]
+- feature: live.syphon
+  priority: P1
+  status: verified
+  platforms: { macos: pass }
+  tests: [loopback_is_bit_exact_and_discoverable, receiver_reconnects_when_the_server_returns, cross_process_frames_are_bit_exact]
+  notes: Loopback and cross-process with OpenMapper on both ends; third-party Syphon apps checked by hand at release gate D.
+- feature: live.spout
+  priority: P1
+  status: verified
+  platforms: { windows: pass }
+  tests: [name_list_round_trips_sorted_and_bounded, texture_info_layout_matches_the_sdk, pixel_formats_convert_to_rgba8, loopback_is_bit_exact_and_discoverable, receiver_reconnects_when_the_sender_returns, duplicate_sender_names_are_refused, cross_process_frames_are_bit_exact]
+  notes: Verified on WARP; third-party Spout apps and hardware GPUs checked by hand at release gate D.
+- feature: live.ndi
+  priority: P1
+  status: implemented-unverified
+  tests: [struct_layouts, frames_convert_from_every_rgb_layout, a_missing_runtime_is_reported_not_fatal, opener_reports_a_missing_runtime_cleanly, loopback_through_the_installed_runtime]
+  platforms: { macos: pass, windows: pending, linux: pending }
+  notes: >-
+    Needs an installed NDI runtime (not bundled; DECISIONS.md D-022). Run with
+    OM_REQUIRE_NDI=1. macOS loopback passed 2026-10-08 against an installed
+    runtime (/usr/local/lib/libndi.dylib): discovery, send and receive, size,
+    channel order and alpha correct. NDI's codec is lossy, so the loopback
+    compares smooth content within a tolerance (measured mean ≈1.5, max ≤7
+    levels); the first run had wrongly expected bit-exact frames.
+- feature: live.camera
+  priority: P0
+  status: implemented-unverified
+  platforms: { macos: pass, windows: pending, linux: pending }
+  tests: [hardware: openmapper-cli live probe]
+  notes: >-
+    macOS physical test 2026-10-08 (MacBook Air camera via Terminal's camera
+    permission): 1920×1080 at 30 fps, 280 frames in 10 s, no reconnects,
+    prompt stop. That test found and fixed two bugs: AVFoundation's
+    "try again" (EAGAIN) was treated as fatal (a reconnect every ~2 frames),
+    and no capture size was requested (a portrait mode was chosen). Windows
+    and Linux cameras still need a physical test.
+- feature: live.decklink
+  priority: P2
+  status: deferred
+  tests: []
+  notes: DECISIONS.md D-023 — awaiting hardware.
+- feature: output.readback
+  priority: P0
+  status: verified
+  tests: [frame_reader_returns_presented_frames]

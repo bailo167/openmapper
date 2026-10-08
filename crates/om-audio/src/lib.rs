@@ -11,8 +11,10 @@
 //! [`RESYNC_THRESHOLD_MS`] from the show clock, the next block jumps back
 //! into sync (DECISIONS.md D-015).
 //!
-//! Voices play only at normal speed; other speeds are muted until a
-//! time-stretching resampler exists.
+//! Voices at other speeds play **varispeed** (like tape or a turntable:
+//! pitch follows speed), resampled with linear interpolation, on the same
+//! `(show − origin) × speed` timeline as their video. Reverse and zero
+//! speeds are silent (DECISIONS.md D-027).
 
 pub mod analysis;
 
@@ -58,6 +60,8 @@ pub struct Voice {
     /// Show frame at which the voice's media frame 0 plays.
     pub origin: i64,
     pub gain: f32,
+    /// Playback speed (1 = normal; ≤ 0 is silent).
+    pub speed: f64,
 }
 
 impl std::fmt::Debug for Voice {
@@ -65,6 +69,7 @@ impl std::fmt::Debug for Voice {
         f.debug_struct("Voice")
             .field("origin", &self.origin)
             .field("gain", &self.gain)
+            .field("speed", &self.speed)
             .finish_non_exhaustive()
     }
 }
@@ -109,6 +114,12 @@ impl Mixer {
     #[must_use]
     pub fn levels(&self) -> analysis::Levels {
         self.analyzer.levels()
+    }
+
+    /// Waveform and spectrum of what was last played.
+    #[must_use]
+    pub fn scope(&self) -> analysis::Scope {
+        self.analyzer.scope()
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -193,7 +204,11 @@ impl Mixer {
 /// Mixes one voice into `out`.
 fn render_voice(v: &Voice, show_start: i64, out: &mut [f32], master: f32) {
     let gain = v.gain * master;
-    if gain <= 0.0 {
+    if gain <= 0.0 || v.speed.is_nan() || v.speed <= 0.0 || v.speed.is_infinite() {
+        return;
+    }
+    if (v.speed - 1.0).abs() > f64::EPSILON {
+        render_varispeed(v, show_start, out, gain);
         return;
     }
     let total = i64::try_from(out.len() / 2).unwrap_or(0);
@@ -220,7 +235,52 @@ fn render_voice(v: &Voice, show_start: i64, out: &mut [f32], master: f32) {
     v.player.mix_into(media, &mut out[a..b], gain);
 }
 
-/// Device output failure.
+/// Highest varispeed rate (bounds the media read per block).
+const MAX_SPEED: f64 = 16.0;
+
+/// Mixes a voice at a speed other than 1: reads the media frames the block
+/// spans and interpolates linearly between them.
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+fn render_varispeed(v: &Voice, show_start: i64, out: &mut [f32], gain: f32) {
+    let speed = v.speed.min(MAX_SPEED);
+    let total = out.len() / 2;
+    if total == 0 {
+        return;
+    }
+    // Media position of output frame k: (show_start + k − origin) · speed.
+    let pos = |k: usize| (show_start - v.origin + k as i64) as f64 * speed;
+    let first_k = (0..total).find(|&k| pos(k) >= 0.0);
+    let Some(first_k) = first_k else { return };
+    let m0 = pos(first_k).floor() as i64;
+    let mut m_end = pos(total - 1).floor() as i64 + 2;
+    if v.player.loop_length().is_none()
+        && let Some(len) = v.player.length()
+    {
+        m_end = m_end.min(len);
+    }
+    let count = usize::try_from(m_end - m0).unwrap_or(0);
+    if count == 0 {
+        return;
+    }
+    let mut media = vec![0f32; count * 2];
+    v.player.mix_into(m0, &mut media, 1.0);
+    for k in first_k..total {
+        let p = pos(k) - m0 as f64;
+        let i = p.floor() as usize;
+        if i >= count {
+            break;
+        }
+        let t = (p - p.floor()) as f32;
+        let j = (i + 1).min(count - 1);
+        for c in 0..2 {
+            let a = media[i * 2 + c];
+            let b = media[j * 2 + c];
+            out[k * 2 + c] += gain * (a + (b - a) * t);
+        }
+    }
+}
+
+/// Device output failure./// Device output failure.
 #[derive(Debug, thiserror::Error)]
 pub enum OutputError {
     #[error("no audio output device")]

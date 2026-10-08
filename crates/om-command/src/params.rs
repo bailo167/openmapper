@@ -58,6 +58,8 @@ pub fn kind(project: &Project, id: &ParamId) -> Option<ParamKind> {
         ParamId::MediaSpeed(m) => project.media_item(*m).map(|_| SPEED),
         ParamId::MediaVolume(m) => project.media_item(*m).map(|_| UNIT),
         ParamId::ShaderInput(m, name) => shader_input_kind(project, *m, name),
+        ParamId::FixtureBrightness(f) => fixture(project, *f).map(|_| UNIT),
+        ParamId::FixtureEnabled(f) => fixture(project, *f).map(|_| ParamKind::Bool),
     }
 }
 
@@ -87,6 +89,8 @@ pub fn get(project: &Project, id: &ParamId) -> Option<ParamValue> {
                 None => return None,
             }
         }
+        ParamId::FixtureBrightness(f) => ParamValue::Float(fixture(project, *f)?.brightness.get()),
+        ParamId::FixtureEnabled(f) => ParamValue::Bool(fixture(project, *f)?.enabled),
     })
 }
 
@@ -94,6 +98,10 @@ pub fn get(project: &Project, id: &ParamId) -> Option<ParamValue> {
 #[allow(clippy::cast_possible_truncation)]
 fn speed_of(v: f64) -> Speed {
     Speed::new((v.clamp(-16.0, 16.0) * 1000.0).round() as i32, 1000).unwrap_or(Speed::NORMAL)
+}
+
+fn fixture(project: &Project, id: om_types::FixtureId) -> Option<&om_project::dmx::Fixture> {
+    project.dmx.fixtures.iter().find(|f| f.id == id)
 }
 
 /// The command that sets `id` to `value` in the document.
@@ -141,6 +149,18 @@ pub fn set_command(project: &Project, id: &ParamId, value: ParamValue) -> Option
                 inputs.insert(name.clone(), shader_value(value)?);
             }
             Command::SetMediaSource { id: *m, source }
+        }
+        ParamId::FixtureBrightness(f) | ParamId::FixtureEnabled(f) => {
+            let mut fixture = fixture(project, *f)?.clone();
+            if matches!(id, ParamId::FixtureEnabled(_)) {
+                fixture.enabled = value.as_bool();
+            } else {
+                fixture.brightness = UnitInterval::saturating(value.as_f64());
+            }
+            Command::PutFixture {
+                fixture,
+                index: None,
+            }
         }
     })
 }
@@ -207,6 +227,18 @@ pub fn list(project: &Project) -> Vec<ParamInfo> {
             }
         }
     }
+    for f in &project.dmx.fixtures {
+        out.push(ParamInfo {
+            id: ParamId::FixtureBrightness(f.id),
+            kind: UNIT,
+            label: format!("{} brightness", f.name),
+        });
+        out.push(ParamInfo {
+            id: ParamId::FixtureEnabled(f.id),
+            kind: ParamKind::Bool,
+            label: format!("{} enabled", f.name),
+        });
+    }
     out
 }
 
@@ -227,6 +259,15 @@ pub fn apply_overrides(project: &mut Project, overrides: &BTreeMap<ParamId, Para
             ParamId::SurfaceEnabled(s) => {
                 if let Some(x) = project.surface_mut(*s) {
                     x.enabled = v.as_bool();
+                }
+            }
+            ParamId::FixtureBrightness(f) | ParamId::FixtureEnabled(f) => {
+                if let Some(x) = project.dmx.fixtures.iter_mut().find(|x| x.id == *f) {
+                    if matches!(id, ParamId::FixtureEnabled(_)) {
+                        x.enabled = v.as_bool();
+                    } else {
+                        x.brightness = UnitInterval::saturating(v.as_f64());
+                    }
                 }
             }
             ParamId::MediaSpeed(m) | ParamId::MediaVolume(m) | ParamId::ShaderInput(m, _) => {

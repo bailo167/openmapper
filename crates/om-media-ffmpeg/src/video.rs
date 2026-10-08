@@ -73,7 +73,18 @@ impl FfmpegVideo {
         if !path.is_file() {
             return Err(MediaError::NotFound { path: shown });
         }
-        let input = ff::format::input(path).map_err(|e| open_err(&shown, e))?;
+        let input = crate::open_file(path).map_err(|e| open_err(&shown, e))?;
+        Self::from_input(input, shown, false)
+    }
+
+    /// Decodes the best video stream of an opened input. `live` selects
+    /// low-latency decoding (slice threading; frame threading would hold
+    /// back several frames).
+    pub(crate) fn from_input(
+        input: ff::format::context::Input,
+        shown: String,
+        live: bool,
+    ) -> Result<Self, MediaError> {
         let stream = input
             .streams()
             .best(ff::media::Type::Video)
@@ -92,9 +103,16 @@ impl FfmpegVideo {
         let mut ctx = ff::codec::context::Context::from_parameters(stream.parameters())
             .map_err(|e| open_err(&shown, e))?;
         ctx.set_threading(ff::threading::Config {
-            kind: ff::threading::Type::Frame,
+            kind: if live {
+                ff::threading::Type::Slice
+            } else {
+                ff::threading::Type::Frame
+            },
             count: 0,
         });
+        if live {
+            ctx.set_flags(ff::codec::Flags::LOW_DELAY);
+        }
         let decoder = ctx.decoder().video().map_err(|e| open_err(&shown, e))?;
         let duration = if stream.duration() > 0 {
             RationalTime::new(
@@ -154,7 +172,7 @@ impl FfmpegVideo {
     fn media_time(&self, pts: i64) -> Option<RationalTime> {
         let tb = self.time_base;
         let raw = RationalTime::new(
-            i128::from(pts - self.start_pts) * i128::from(tb.numerator()),
+            (i128::from(pts) - i128::from(self.start_pts)) * i128::from(tb.numerator()),
             i128::from(tb.denominator()),
         )
         .ok()?;
@@ -220,12 +238,13 @@ impl FfmpegVideo {
         StillImage::from_rgba8(rgba.width(), rgba.height(), px)
     }
 
-    /// Feeds the decoder until it yields a frame or the stream ends.
-    fn decode_next(&mut self) -> Result<bool, MediaError> {
+    /// Feeds the decoder until it yields a frame, the stream ends, or (live
+    /// devices) the demuxer has nothing ready yet.
+    fn decode_next(&mut self) -> Result<Step, MediaError> {
         loop {
             match self.decoder.receive_frame(&mut self.decoded) {
-                Ok(()) => return Ok(true),
-                Err(ff::Error::Eof) => return Ok(false),
+                Ok(()) => return Ok(Step::Frame),
+                Err(ff::Error::Eof) => return Ok(Step::End),
                 Err(ff::Error::Other { errno }) if errno == EAGAIN => {}
                 Err(ff::Error::InvalidData) => {
                     self.skipped_packets += 1;
@@ -234,7 +253,7 @@ impl FfmpegVideo {
                 Err(e) => return Err(stream_err(&self.path, e)),
             }
             if self.sent_eof {
-                return Ok(false);
+                return Ok(Step::End);
             }
             let mut packet = ff::Packet::empty();
             match packet.read(&mut self.input) {
@@ -256,6 +275,9 @@ impl FfmpegVideo {
                 }
                 // A corrupt packet the demuxer can resync past.
                 Err(ff::Error::InvalidData) => self.skipped_packets += 1,
+                // Capture devices (AVFoundation) answer "try again" when no
+                // new picture is ready; that is not an error.
+                Err(ff::Error::Other { errno }) if errno == EAGAIN => return Ok(Step::WouldBlock),
                 Err(e) => return Err(stream_err(&self.path, e)),
             }
         }
@@ -325,8 +347,42 @@ impl MediaSource for FfmpegVideo {
     }
 
     fn next_frame(&mut self) -> Result<Option<VideoFrame>, MediaError> {
-        if !self.decode_next()? {
-            return Ok(None);
+        loop {
+            match self.step()? {
+                LiveStep::Frame(f) => return Ok(Some(f)),
+                LiveStep::End => return Ok(None),
+                // Only live devices do this; files never wait.
+                LiveStep::WouldBlock => std::thread::sleep(WOULD_BLOCK_NAP),
+            }
+        }
+    }
+}
+
+/// Result of [`FfmpegVideo::decode_next`].
+enum Step {
+    Frame,
+    End,
+    WouldBlock,
+}
+
+/// One decoding step for live sources, which must not block indefinitely.
+pub(crate) enum LiveStep {
+    Frame(VideoFrame),
+    End,
+    /// Nothing ready yet; try again shortly.
+    WouldBlock,
+}
+
+/// Pause before asking a device that said "try again" once more.
+pub(crate) const WOULD_BLOCK_NAP: std::time::Duration = std::time::Duration::from_millis(2);
+
+impl FfmpegVideo {
+    /// Decodes the next frame, or reports that the device has none ready.
+    pub(crate) fn step(&mut self) -> Result<LiveStep, MediaError> {
+        match self.decode_next()? {
+            Step::Frame => {}
+            Step::End => return Ok(LiveStep::End),
+            Step::WouldBlock => return Ok(LiveStep::WouldBlock),
         }
         let pts = self
             .decoded
@@ -344,7 +400,7 @@ impl MediaSource for FfmpegVideo {
         };
         self.last_pts = Some(pts);
         let image = Arc::new(self.convert()?);
-        Ok(Some(VideoFrame {
+        Ok(LiveStep::Frame(VideoFrame {
             pts,
             duration: None,
             image,

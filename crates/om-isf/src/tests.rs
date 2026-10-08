@@ -93,3 +93,31 @@ fn dialect_rewrites() {
     assert!(c.glsl.contains("void isf_user_main()"));
     assert!(!c.glsl.contains("gl_FragColor"));
 }
+
+#[test]
+fn audio_inputs_bind_as_textures() {
+    let doc = parse(&corpus("audio.fs")).unwrap();
+    assert_eq!(doc.inputs[0].kind, InputKind::Audio);
+    assert_eq!(doc.inputs[1].kind, InputKind::AudioFft);
+    assert!(!doc.is_filter());
+    assert_eq!(doc.image_names(), vec!["wave", "spectrum"]);
+    let c = compile(&doc).unwrap();
+    assert_eq!(c.images, vec!["wave", "spectrum"]);
+    assert!(c.field("wave").is_none(), "no uniform for a texture input");
+}
+
+#[test]
+fn pass_count_is_capped() {
+    let pass = r#"{"TARGET":"t"}"#;
+    let header = |n: usize| {
+        format!(
+            "/*{{\"PASSES\":[{}]}}*/ void main() {{ gl_FragColor = vec4(1.0); }}",
+            vec![pass; n].join(",")
+        )
+    };
+    assert!(parse(&header(MAX_PASSES)).is_ok());
+    assert!(matches!(
+        parse(&header(MAX_PASSES + 1)),
+        Err(IsfError::Header(_))
+    ));
+}

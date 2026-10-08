@@ -179,7 +179,7 @@ impl FfmpegAudio {
         if !path.is_file() {
             return Err(MediaError::NotFound { path: shown });
         }
-        let input = ff::format::input(path).map_err(|e| MediaError::Open {
+        let input = crate::open_file(path).map_err(|e| MediaError::Open {
             path: shown.clone(),
             message: e.to_string(),
         })?;
@@ -188,6 +188,12 @@ impl FfmpegAudio {
         };
         let stream_index = stream.index();
         let time_base = stream.time_base();
+        if time_base.numerator() <= 0 || time_base.denominator() <= 0 {
+            return Err(MediaError::Open {
+                path: shown,
+                message: "stream has an invalid time base".into(),
+            });
+        }
         let start_pts = match stream.start_time() {
             ff::ffi::AV_NOPTS_VALUE => 0,
             s => s,
@@ -239,17 +245,28 @@ impl FfmpegAudio {
     fn first_position(&self, pts: i64) -> i64 {
         let tb = self.time_base;
         let src_rate = i128::from(self.decoded.rate().max(1));
-        let round_div = |num: i128, den: i128| (num * 2 + den).div_euclid(den * 2);
-        let mut src = round_div(
-            i128::from(pts - self.start_pts) * i128::from(tb.numerator()) * src_rate,
-            i128::from(tb.denominator()),
-        );
+        // Timestamps come from the file: checked arithmetic, never a panic
+        // or a wrapped value (an absurd timestamp maps to position 0).
+        let round_div = |num: i128, den: i128| {
+            let twice = num.checked_mul(2)?.checked_add(den)?;
+            Some(twice.div_euclid(den.checked_mul(2).filter(|d| *d > 0)?))
+        };
+        let Some(mut src) = (i128::from(pts) - i128::from(self.start_pts))
+            .checked_mul(i128::from(tb.numerator()))
+            .and_then(|v| v.checked_mul(src_rate))
+            .and_then(|v| round_div(v, i128::from(tb.denominator())))
+        else {
+            return 0;
+        };
         let ticks_per_second = i128::from(tb.denominator()) / i128::from(tb.numerator().max(1));
         let packet = i128::try_from(self.decoded.samples()).unwrap_or(0);
         if ticks_per_second < src_rate && packet > 0 {
-            src = round_div(src, packet) * packet;
+            src = round_div(src, packet).unwrap_or(0) * packet;
         }
-        i64::try_from(round_div(src * i128::from(self.out.sample_rate), src_rate)).unwrap_or(0)
+        src.checked_mul(i128::from(self.out.sample_rate))
+            .and_then(|v| round_div(v, src_rate))
+            .and_then(|v| i64::try_from(v).ok())
+            .unwrap_or(0)
     }
 
     fn decode_frame(&mut self) -> Result<bool, MediaError> {

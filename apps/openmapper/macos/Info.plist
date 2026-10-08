@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Embedded into the macOS executable (__TEXT,__info_plist) by build.rs
+       for release builds, so the bare binary carries the identity and
+       privacy strings an .app bundle would (RELEASE_GAPS.md G-02). -->
+  <key>CFBundleIdentifier</key>
+  <string>io.github.bailo167.openmapper</string>
+  <key>CFBundleName</key>
+  <string>OpenMapper</string>
+  <key>CFBundleExecutable</key>
+  <string>openmapper</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>NSCameraUsageDescription</key>
+  <string>OpenMapper shows camera input on mapped surfaces and uses the camera for projector calibration.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>OpenMapper can capture audio from camera and capture devices.</string>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>OpenMapper sends and receives video, OSC and DMX on the local network.</string>
+</dict>
+</plist>

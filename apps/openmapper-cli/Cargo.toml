@@ -19,6 +19,10 @@ om-gpu.workspace = true
 om-render.workspace = true
 om-output.workspace = true
 om-media-core.workspace = true
+om-platform.workspace = true
+om-dmx.workspace = true
+om-calibration.workspace = true
+om-geom.workspace = true
 om-media-ffmpeg.workspace = true
 om-time.workspace = true
 image.workspace = true
@@ -26,6 +30,7 @@ clap.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+serde_json.workspace = true
 om-media-core.workspace = true
 om-time.workspace = true
 om-media-ffmpeg = { workspace = true, features = ["fixtures"] }

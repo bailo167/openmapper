@@ -1,0 +1,31 @@
+# Parity rows for milestone 9. Status ladder: docs/PLAN.md.
+- feature: plugins.sandbox
+  priority: P0
+  status: verified
+  tests: [hostile_imports_and_bad_modules_are_refused, crashes_loops_and_memory_hogs_are_contained, manifests_parse_and_validate, capabilities_map_to_imports]
+- feature: plugins.hanging-plugin-terminated
+  priority: P0
+  status: verified
+  tests: [crashes_loops_and_memory_hogs_are_contained, runner_never_blocks_callers_and_disables_a_hanging_plugin]
+- feature: plugins.abi-v1-fixture
+  priority: P0
+  status: verified
+  tests: [good_plugin_processes_frames_and_declares_capabilities]
+  notes: tests/plugins/invert.wat must keep passing after host changes.
+- feature: plugins.media-filters
+  priority: P1
+  status: verified
+  tests: [chains_process_in_order_and_fall_back_on_errors, history_and_replay_are_exact]
+- feature: resilience.crash-recovery
+  priority: P0
+  status: verified
+  tests: [random_kills_never_corrupt_or_lose_recovered_work, crash_before_save_recovers_unsaved_commands, torn_journal_tail_recovers_complete_entries]
+- feature: resilience.migration
+  priority: P0
+  status: verified
+  tests: [n_minus_two_documents_migrate_through_every_step, gaps_future_versions_and_failing_steps_are_errors, version_1_fixture_loads_and_round_trips]
+  notes: Synthetic 3-version chain until format version 3 exists.
+- feature: resilience.media-relink
+  priority: P0
+  status: verified
+  tests: [finds_moved_files_preferring_matching_folders]

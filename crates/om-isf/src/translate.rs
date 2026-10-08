@@ -145,7 +145,7 @@ pub fn compile(doc: &IsfDoc) -> Result<Compiled, IsfError> {
             InputKind::Long | InputKind::Bool | InputKind::Event => UniformKind::Int,
             InputKind::Point2D => UniformKind::Vec2,
             InputKind::Color => UniformKind::Vec4,
-            InputKind::Image => continue,
+            InputKind::Image | InputKind::Audio | InputKind::AudioFft => continue,
         };
         push(&i.name, kind);
     }
@@ -233,9 +233,12 @@ pub fn compile(doc: &IsfDoc) -> Result<Compiled, IsfError> {
             .saturating_sub(preamble_lines)
             .saturating_add(doc.glsl_first_line.saturating_sub(1))
     };
-    let mut frontend = naga::front::glsl::Frontend::default();
     let options = naga::front::glsl::Options::from(naga::ShaderStage::Fragment);
-    let module = frontend.parse(&options, &g).map_err(|errs| {
+    // Shaders are untrusted downloads: contain any frontend panic.
+    let parsed =
+        std::panic::catch_unwind(|| naga::front::glsl::Frontend::default().parse(&options, &g))
+            .map_err(|_| IsfError::Validation("the GLSL frontend failed on this shader".into()))?;
+    let module = parsed.map_err(|errs| {
         let first = errs.errors.first();
         let line = first
             .map(|e| e.meta.location(&g).line_number as usize)

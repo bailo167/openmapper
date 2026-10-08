@@ -20,9 +20,13 @@ pub fn eval_dimension(
         expr: expr.to_owned(),
         message: m.to_owned(),
     };
+    if expr.len() > MAX_EXPR_BYTES {
+        return Err(err("expression is too long"));
+    }
     let mut p = Parser {
         s: expr.as_bytes(),
         i: 0,
+        depth: 0,
         width,
         height,
         vars,
@@ -39,9 +43,16 @@ pub fn eval_dimension(
     Ok(v.round().clamp(1.0, 16384.0) as u32)
 }
 
+/// Longest size expression accepted.
+pub const MAX_EXPR_BYTES: usize = 256;
+/// Deepest nesting of parentheses, calls and unary minus (the parser is
+/// recursive; untrusted shaders must not overflow the stack).
+pub const MAX_DEPTH: usize = 32;
+
 struct Parser<'a> {
     s: &'a [u8],
     i: usize,
+    depth: usize,
     width: f64,
     height: f64,
     vars: &'a HashMap<String, f64>,
@@ -65,6 +76,16 @@ impl Parser<'_> {
     }
 
     fn sum(&mut self) -> Result<f64, String> {
+        self.depth += 1;
+        if self.depth > MAX_DEPTH {
+            return Err("expression is nested too deeply".into());
+        }
+        let v = self.sum_inner();
+        self.depth -= 1;
+        v
+    }
+
+    fn sum_inner(&mut self) -> Result<f64, String> {
         let mut v = self.product()?;
         loop {
             if self.eat(b'+') {
@@ -91,10 +112,12 @@ impl Parser<'_> {
     }
 
     fn unary(&mut self) -> Result<f64, String> {
-        if self.eat(b'-') {
-            return Ok(-self.unary()?);
+        let mut negate = false;
+        while self.eat(b'-') {
+            negate = !negate;
         }
-        self.atom()
+        let v = self.atom()?;
+        Ok(if negate { -v } else { v })
     }
 
     fn ident(&mut self) -> String {
@@ -187,5 +210,19 @@ mod tests {
         assert!(e("$WIDTH +").is_err());
         assert!(e("nope * 2").is_err());
         assert!(e("1/0").is_err());
+        assert_eq!(e("---2").unwrap(), 1, "unary minus chains (−2 → 1 px)");
+    }
+
+    #[test]
+    fn hostile_nesting_and_length_are_errors_not_stack_overflows() {
+        let vars = HashMap::new();
+        let e = |s: &str| eval_dimension(s, 64.0, 64.0, &vars);
+        let nested = |n: usize| format!("{}1{}", "(".repeat(n), ")".repeat(n));
+        assert_eq!(e(&nested(20)).unwrap(), 1);
+        assert!(e(&nested(100)).is_err(), "too deep");
+        let calls = format!("{}1{}", "floor(".repeat(40), ")".repeat(40));
+        assert!(e(&calls).is_err());
+        assert!(e(&"(".repeat(100_000)).is_err(), "too long");
+        assert_eq!(e(&format!("{}2", "-".repeat(200))).unwrap(), 2);
     }
 }

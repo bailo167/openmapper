@@ -24,6 +24,8 @@ use serde::Deserialize;
 
 /// Largest accepted shader source (bytes); bounds parse/compile time.
 pub const MAX_SOURCE_BYTES: usize = 256 * 1024;
+/// Most render passes a shader may declare (each may own two textures).
+pub const MAX_PASSES: usize = 16;
 
 /// ISF loading/compilation failure.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -56,6 +58,18 @@ pub enum InputKind {
     Point2D,
     Color,
     Image,
+    /// Audio waveform as an image: one row per channel (ISF `audio`).
+    Audio,
+    /// Audio spectrum as an image: one row per channel (ISF `audioFFT`).
+    AudioFft,
+}
+
+impl InputKind {
+    /// True for inputs bound as textures (image and audio inputs).
+    #[must_use]
+    pub fn is_texture(self) -> bool {
+        matches!(self, Self::Image | Self::Audio | Self::AudioFft)
+    }
 }
 
 /// One declared input.
@@ -109,13 +123,13 @@ impl IsfDoc {
             .any(|i| i.kind == InputKind::Image && i.name == "inputImage")
     }
 
-    /// Image inputs followed by pass targets, in binding order.
+    /// Image and audio inputs followed by pass targets, in binding order.
     #[must_use]
     pub fn image_names(&self) -> Vec<String> {
         let mut out: Vec<String> = self
             .inputs
             .iter()
-            .filter(|i| i.kind == InputKind::Image)
+            .filter(|i| i.kind.is_texture())
             .map(|i| i.name.clone())
             .collect();
         for p in &self.passes {
@@ -228,6 +242,8 @@ pub fn parse(source: &str) -> Result<IsfDoc, IsfError> {
             "point2D" => InputKind::Point2D,
             "color" => InputKind::Color,
             "image" => InputKind::Image,
+            "audio" => InputKind::Audio,
+            "audioFFT" => InputKind::AudioFft,
             other => {
                 return Err(IsfError::UnsupportedInput {
                     name: raw.name,
@@ -266,6 +282,12 @@ pub fn parse(source: &str) -> Result<IsfDoc, IsfError> {
         {
             return Err(IsfError::BadName(t.clone()));
         }
+    }
+    if passes.len() > MAX_PASSES {
+        return Err(IsfError::Header(format!(
+            "{} passes (at most {MAX_PASSES})",
+            passes.len()
+        )));
     }
     if passes.is_empty() {
         passes.push(Pass::default());

@@ -1,0 +1,443 @@
+// SPDX-License-Identifier: Apache-2.0
+//! Plugin filters on media: each media item's enabled plugins run in order
+//! on its frames, each on its own [`PluginRunner`] thread. Callers upload
+//! the processed frames that [`PluginStage::poll`] returns. The original
+//! frame is shown until a chain has produced output, and whenever a chain
+//! cannot run (load error, plugin disabled after faults), so a bad plugin
+//! never blanks the show or blocks rendering.
+
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use om_media_core::StillImage;
+use om_plugin_host::runner::{Job, PluginRunner, RunnerState};
+use om_plugin_host::{Plugin, PluginHost};
+use om_project::{PluginUse, Project};
+use om_types::MediaId;
+
+use crate::media::resolve_media_path;
+
+/// Most plugin instances (threads) running across all media.
+pub const MAX_RUNNERS: usize = 64;
+
+fn resolve(plugin: &Plugin, use_: &PluginUse) -> Vec<f32> {
+    let given: BTreeMap<String, f32> = use_
+        .params
+        .iter()
+        .map(|(k, v)| {
+            #[allow(clippy::cast_possible_truncation)]
+            (k.clone(), v.get() as f32)
+        })
+        .collect();
+    plugin.manifest.resolve_params(&given)
+}
+
+/// Largest plugin file read.
+pub const MAX_MODULE_BYTES: u64 = 16 << 20;
+
+struct StageRun {
+    name: String,
+    runner: PluginRunner,
+    params: Vec<f32>,
+    /// Sequence of the previous stage's output last fed to this stage.
+    fed: u64,
+}
+
+struct Chain {
+    config: Vec<PluginUse>,
+    stages: Vec<StageRun>,
+    /// Load errors, one per plugin that could not be used.
+    errors: Vec<String>,
+    /// Last final output sequence handed to the caller.
+    delivered: u64,
+    produced: bool,
+}
+
+/// Status of one plugin on a media item, for display.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginStatus {
+    pub name: String,
+    pub state: String,
+    pub ok: bool,
+}
+
+/// Runs plugin filters for every media item that has them.
+#[derive(Default)]
+pub struct PluginStage {
+    host: Option<Arc<PluginHost>>,
+    host_error: Option<String>,
+    modules: HashMap<PathBuf, Result<Plugin, String>>,
+    chains: HashMap<MediaId, Chain>,
+}
+
+impl std::fmt::Debug for PluginStage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "PluginStage({} chains)", self.chains.len())
+    }
+}
+
+impl PluginStage {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn host(&mut self) -> Option<Arc<PluginHost>> {
+        if self.host.is_none() && self.host_error.is_none() {
+            match PluginHost::new() {
+                Ok(h) => self.host = Some(Arc::new(h)),
+                Err(e) => self.host_error = Some(e.to_string()),
+            }
+        }
+        self.host.clone()
+    }
+
+    fn module(&mut self, path: &Path) -> Result<Plugin, String> {
+        // One compile per file however the project spells its path.
+        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+        let path = canonical.as_path();
+        if let Some(m) = self.modules.get(path) {
+            return m.clone();
+        }
+        let loaded = match self.host() {
+            None => Err(self
+                .host_error
+                .clone()
+                .unwrap_or_else(|| "plugin host unavailable".into())),
+            Some(h) => om_project::store::read_limited(path, MAX_MODULE_BYTES)
+                .map_err(|e| format!("{}: {e}", path.display()))
+                .and_then(|bytes| {
+                    // Text format only from `.wat` files: a parse error would
+                    // otherwise echo a line of whatever file a project names.
+                    let wat = path
+                        .extension()
+                        .is_some_and(|e| e.eq_ignore_ascii_case("wat"));
+                    if !wat && !bytes.starts_with(b"\0asm") {
+                        return Err(format!("{}: not a WebAssembly module", path.display()));
+                    }
+                    h.load(&bytes).map_err(|e| e.to_string())
+                }),
+        };
+        self.modules.insert(path.to_owned(), loaded.clone());
+        loaded
+    }
+
+    /// The manifest of the plugin file at `path` (resolved), once loaded.
+    #[must_use]
+    pub fn manifest(&self, path: &Path) -> Option<&om_plugin_api::Manifest> {
+        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+        self.modules
+            .get(&canonical)?
+            .as_ref()
+            .ok()
+            .map(|p| &p.manifest)
+    }
+
+    /// Forgets loaded plugin files so changed files are read again.
+    pub fn reload(&mut self) {
+        self.modules.clear();
+        self.chains.clear();
+    }
+
+    /// Starts and stops chains to match the project. Parameter-only
+    /// changes update running plugins in place (no restart).
+    pub fn sync(&mut self, project: &Project, project_dir: Option<&Path>) {
+        let same_plugins = |a: &[PluginUse], b: &[PluginUse]| {
+            a.len() == b.len()
+                && a.iter()
+                    .zip(b)
+                    .all(|(x, y)| x.path == y.path && x.enabled == y.enabled)
+        };
+        let modules = &self.modules;
+        self.chains.retain(|id, chain| {
+            let Some(m) = project.media.iter().find(|m| m.id == *id) else {
+                return false;
+            };
+            if m.plugins == chain.config {
+                return true;
+            }
+            if !same_plugins(&m.plugins, &chain.config) || !chain.errors.is_empty() {
+                return false;
+            }
+            for (stage, use_) in chain
+                .stages
+                .iter_mut()
+                .zip(m.plugins.iter().filter(|p| p.enabled))
+            {
+                let path = resolve_media_path(project_dir, &use_.path);
+                let canonical = std::fs::canonicalize(&path).unwrap_or(path);
+                if let Some(Ok(plugin)) = modules.get(&canonical) {
+                    stage.params = resolve(plugin, use_);
+                }
+            }
+            chain.config = m.plugins.clone();
+            true
+        });
+        let mut running: usize = self.chains.values().map(|c| c.stages.len()).sum();
+        for m in &project.media {
+            if m.plugins.iter().all(|p| !p.enabled) || self.chains.contains_key(&m.id) {
+                continue;
+            }
+            let mut stages = Vec::new();
+            let mut errors = Vec::new();
+            for use_ in m.plugins.iter().filter(|p| p.enabled) {
+                let path = resolve_media_path(project_dir, &use_.path);
+                match (self.module(&path), self.host()) {
+                    (Ok(_), Some(_)) if running >= MAX_RUNNERS => {
+                        errors.push(format!("more than {MAX_RUNNERS} plugins running"));
+                    }
+                    (Ok(plugin), Some(host)) => {
+                        running += 1;
+                        let params = resolve(&plugin, use_);
+                        stages.push(StageRun {
+                            name: plugin.manifest.name.clone(),
+                            runner: PluginRunner::spawn(host, plugin),
+                            params,
+                            fed: 0,
+                        });
+                    }
+                    (Err(e), _) => errors.push(e),
+                    (Ok(_), None) => errors.push("plugin host unavailable".into()),
+                }
+            }
+            self.chains.insert(
+                m.id,
+                Chain {
+                    config: m.plugins.clone(),
+                    stages,
+                    errors,
+                    delivered: 0,
+                    produced: false,
+                },
+            );
+        }
+    }
+
+    /// Whether frames of `id` go through plugins (callers then upload what
+    /// [`Self::poll`] returns instead of the original, once
+    /// [`Self::shows_original`] is false).
+    #[must_use]
+    pub fn has_chain(&self, id: MediaId) -> bool {
+        self.chains.get(&id).is_some_and(|c| !c.stages.is_empty())
+    }
+
+    /// True while the original frame should be shown: before the chain's
+    /// first output, or when it cannot run.
+    #[must_use]
+    pub fn shows_original(&self, id: MediaId) -> bool {
+        self.chains.get(&id).is_none_or(|c| {
+            !c.produced
+                || !c.errors.is_empty()
+                || c.stages.is_empty()
+                || c.stages
+                    .iter()
+                    .any(|s| matches!(s.runner.state(), RunnerState::Disabled { .. }))
+        })
+    }
+
+    /// True if `id`'s chain cannot produce output (load error or a plugin
+    /// disabled after repeated faults).
+    #[must_use]
+    pub fn failed(&self, id: MediaId) -> bool {
+        self.chains.get(&id).is_some_and(|c| {
+            !c.errors.is_empty()
+                || c.stages
+                    .iter()
+                    .any(|s| matches!(s.runner.state(), RunnerState::Disabled { .. }))
+        })
+    }
+
+    /// Feeds a new frame of `id` into its chain (never blocks).
+    pub fn submit(&mut self, id: MediaId, image: &StillImage, time: f64) {
+        let Some(chain) = self.chains.get_mut(&id) else {
+            return;
+        };
+        let Some(first) = chain.stages.first_mut() else {
+            return;
+        };
+        first.runner.submit(Job {
+            rgba: Arc::new(image.rgba8().to_vec()),
+            width: image.width(),
+            height: image.height(),
+            params: first.params.clone(),
+            time,
+        });
+    }
+
+    /// Advances chains and returns finished frames to upload.
+    pub fn poll(&mut self) -> Vec<(MediaId, StillImage)> {
+        let mut out = Vec::new();
+        for (id, chain) in &mut self.chains {
+            // Hand each stage's newest output to the next stage.
+            for k in 1..chain.stages.len() {
+                let (before, after) = chain.stages.split_at_mut(k);
+                let (prev, next) = (&before[k - 1], &mut after[0]);
+                if let Some(o) = prev.runner.output().filter(|o| o.seq > next.fed) {
+                    next.fed = o.seq;
+                    next.runner.submit(Job {
+                        rgba: o.rgba,
+                        width: o.width,
+                        height: o.height,
+                        params: next.params.clone(),
+                        time: 0.0,
+                    });
+                }
+            }
+            let Some(last) = chain.stages.last() else {
+                continue;
+            };
+            if let Some(o) = last.runner.output().filter(|o| o.seq > chain.delivered) {
+                chain.delivered = o.seq;
+                if let Ok(img) = StillImage::from_rgba8(o.width, o.height, o.rgba.to_vec()) {
+                    chain.produced = true;
+                    out.push((*id, img));
+                }
+            }
+        }
+        out
+    }
+
+    /// Per-plugin status of `id`'s chain.
+    #[must_use]
+    pub fn status(&self, id: MediaId) -> Vec<PluginStatus> {
+        let Some(chain) = self.chains.get(&id) else {
+            return Vec::new();
+        };
+        let mut v: Vec<PluginStatus> = chain
+            .errors
+            .iter()
+            .map(|e| PluginStatus {
+                name: "plugin".into(),
+                state: e.clone(),
+                ok: false,
+            })
+            .collect();
+        for s in &chain.stages {
+            let (state, ok) = match s.runner.state() {
+                RunnerState::Running => {
+                    (format!("running ({} frames)", s.runner.processed()), true)
+                }
+                RunnerState::Faulted { error, count } => {
+                    (format!("restarting after: {error} ({count})"), false)
+                }
+                RunnerState::Disabled { error } => (format!("disabled: {error}"), false),
+            };
+            v.push(PluginStatus {
+                name: s.name.clone(),
+                state,
+                ok,
+            });
+        }
+        v
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use om_project::{Media, MediaSource, PatternKind};
+
+    use super::*;
+
+    const INVERT: &str = include_str!("../../om-plugin-host/tests/plugins/invert.wat");
+
+    fn project(plugins: Vec<PluginUse>) -> Project {
+        let mut p = Project::new("plugins");
+        p.media.push(Media {
+            id: MediaId::from_u128(1),
+            name: "m".into(),
+            source: MediaSource::Pattern {
+                pattern: PatternKind::White,
+            },
+            playback: Default::default(),
+            plugins,
+            extensions: Default::default(),
+        });
+        p
+    }
+
+    fn use_(path: &str) -> PluginUse {
+        PluginUse {
+            path: path.into(),
+            enabled: true,
+            params: BTreeMap::new(),
+        }
+    }
+
+    fn wait_output(stage: &mut PluginStage) -> Vec<(MediaId, StillImage)> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let out = stage.poll();
+            if !out.is_empty() || Instant::now() > deadline {
+                return out;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn chains_process_in_order_and_fall_back_on_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("invert.wat"), INVERT).unwrap();
+        let id = MediaId::from_u128(1);
+        let img = StillImage::from_rgba8(2, 1, vec![10, 20, 30, 255, 200, 100, 0, 128]).unwrap();
+
+        // One plugin: inverted.
+        let mut stage = PluginStage::new();
+        stage.sync(&project(vec![use_("invert.wat")]), Some(dir.path()));
+        assert!(stage.has_chain(id) && stage.shows_original(id));
+        stage.submit(id, &img, 0.0);
+        let out = wait_output(&mut stage);
+        assert_eq!(out[0].1.rgba8(), &[245, 235, 225, 255, 55, 155, 255, 128]);
+        assert!(!stage.shows_original(id));
+        assert!(stage.status(id)[0].ok);
+
+        // A parameter change updates the running plugin (no restart: its
+        // frame count keeps going) and takes effect on the next frame.
+        let before = stage.status(id)[0].state.clone();
+        let mut copy = use_("invert.wat");
+        copy.params
+            .insert("amount".into(), om_types::Finite::new(0.2).unwrap());
+        stage.sync(&project(vec![copy]), Some(dir.path()));
+        assert_eq!(stage.status(id)[0].state, before, "same runner");
+        assert!(!stage.shows_original(id));
+        stage.submit(id, &img, 0.0);
+        let out = wait_output(&mut stage);
+        assert_eq!(out[0].1.rgba8(), img.rgba8(), "amount < 0.5 copies");
+
+        // Two inverts cancel out.
+        stage.sync(
+            &project(vec![use_("invert.wat"), use_("invert.wat")]),
+            Some(dir.path()),
+        );
+        stage.submit(id, &img, 0.0);
+        let out = wait_output(&mut stage);
+        assert_eq!(out[0].1.rgba8(), img.rgba8());
+
+        // A missing file: the original keeps showing and the error is reported.
+        stage.sync(&project(vec![use_("missing.wasm")]), Some(dir.path()));
+        assert!(!stage.has_chain(id));
+        assert!(stage.shows_original(id));
+        assert!(!stage.status(id)[0].ok);
+
+        // Text format only from `.wat` files; endless devices are refused.
+        std::fs::write(dir.path().join("secret.txt"), INVERT).unwrap();
+        stage.sync(&project(vec![use_("secret.txt")]), Some(dir.path()));
+        assert!(
+            stage.status(id)[0]
+                .state
+                .contains("not a WebAssembly module")
+        );
+        if cfg!(unix) {
+            stage.sync(&project(vec![use_("/dev/zero")]), Some(dir.path()));
+            assert!(stage.status(id)[0].state.contains("not a regular file"));
+        }
+
+        // Removing plugins removes the chain.
+        stage.sync(&project(Vec::new()), Some(dir.path()));
+        assert!(stage.status(id).is_empty());
+    }
+}

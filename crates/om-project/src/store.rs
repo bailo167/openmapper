@@ -71,9 +71,49 @@ pub fn journal_path(path: &Path) -> PathBuf {
     with_suffix(path, ".journal")
 }
 
+/// Largest project file accepted.
+pub const MAX_PROJECT_BYTES: u64 = 64 << 20;
+
+/// Reads a regular file of at most `limit` bytes. Devices, pipes and
+/// directories are refused before opening (a FIFO would block the caller,
+/// `/dev/zero` would never end), and the read stops after `limit + 1`
+/// bytes. Paths come from project files, which may be untrusted.
+pub fn read_limited(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
+    use std::io::Read;
+    let meta = fs::metadata(path)?;
+    if !meta.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a regular file",
+        ));
+    }
+    if meta.len() > limit {
+        return Err(too_large(limit));
+    }
+    let mut out = Vec::new();
+    File::open(path)?.take(limit + 1).read_to_end(&mut out)?;
+    if out.len() as u64 > limit {
+        return Err(too_large(limit));
+    }
+    Ok(out)
+}
+
+/// [`read_limited`] as UTF-8 text.
+pub fn read_limited_string(path: &Path, limit: u64) -> io::Result<String> {
+    String::from_utf8(read_limited(path, limit)?)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+}
+
+fn too_large(limit: u64) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("file is larger than {limit} bytes"),
+    )
+}
+
 /// Reads, migrates and validates a project file.
 pub fn load(path: &Path) -> Result<Loaded, StoreError> {
-    let text = fs::read_to_string(path).map_err(io_err("reading", path))?;
+    let text = read_limited_string(path, MAX_PROJECT_BYTES).map_err(io_err("reading", path))?;
     Project::from_json(&text).map_err(|source| StoreError::Project {
         path: path.to_owned(),
         source,
@@ -152,7 +192,13 @@ pub struct JournalEntry<T> {
 pub struct Journal {
     path: PathBuf,
     file: File,
+    /// When entries were last forced to disk (timed fsync batching, D-004).
+    synced: std::time::Instant,
 }
+
+/// Longest time journal entries stay only in OS buffers (power-loss
+/// window).
+pub const JOURNAL_SYNC_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Journal contents read back after a crash.
 #[derive(Debug)]
@@ -178,24 +224,47 @@ impl Journal {
         project_id: ProjectId,
         base_revision: u64,
     ) -> Result<Self, StoreError> {
+        Self::create_with_entries::<()>(project_path, project_id, base_revision, &[])
+    }
+
+    /// Atomically replaces the journal with a header and `entries`: written
+    /// to a temporary file, synced, then renamed over the old journal, so a
+    /// crash at any moment leaves either the old or the new journal, never a
+    /// partial one (losing recovered work).
+    pub fn create_with_entries<T: Serialize>(
+        project_path: &Path,
+        project_id: ProjectId,
+        base_revision: u64,
+        entries: &[JournalEntry<T>],
+    ) -> Result<Self, StoreError> {
         let path = journal_path(project_path);
+        let tmp = with_suffix(&path, ".tmp");
         let header = JournalHeader {
             journal: JOURNAL_MAGIC.into(),
             version: JOURNAL_VERSION,
             project_id,
             base_revision,
         };
-        let mut line = serde_json::to_string(&header).map_err(|e| StoreError::Journal {
+        let json_err = |e: serde_json::Error| StoreError::Journal {
             path: path.clone(),
             line: 1,
             message: e.to_string(),
-        })?;
-        line.push('\n');
-        let mut file = File::create(&path).map_err(io_err("creating", &path))?;
-        file.write_all(line.as_bytes())
-            .map_err(io_err("writing", &path))?;
-        file.sync_all().map_err(io_err("syncing", &path))?;
-        Ok(Self { path, file })
+        };
+        let mut text = serde_json::to_string(&header).map_err(json_err)?;
+        text.push('\n');
+        for e in entries {
+            text.push_str(&serde_json::to_string(e).map_err(json_err)?);
+            text.push('\n');
+        }
+        {
+            let mut file = File::create(&tmp).map_err(io_err("creating", &tmp))?;
+            file.write_all(text.as_bytes())
+                .map_err(io_err("writing", &tmp))?;
+            file.sync_all().map_err(io_err("syncing", &tmp))?;
+        }
+        fs::rename(&tmp, &path).map_err(io_err("replacing", &path))?;
+        sync_parent_dir(&path);
+        Self::open_append(project_path)
     }
 
     /// Re-opens an existing journal for appending (after recovery).
@@ -205,11 +274,15 @@ impl Journal {
             .append(true)
             .open(&path)
             .map_err(io_err("opening", &path))?;
-        Ok(Self { path, file })
+        Ok(Self {
+            path,
+            file,
+            synced: std::time::Instant::now(),
+        })
     }
 
-    /// Appends one entry. Flushed to the OS immediately; see DECISIONS.md
-    /// D-004 for the fsync policy.
+    /// Appends one entry. Flushed to the OS immediately and forced to disk
+    /// at most [`JOURNAL_SYNC_INTERVAL`] later (DECISIONS.md D-004, D-026).
     pub fn append<T: Serialize>(&mut self, entry: &JournalEntry<T>) -> Result<(), StoreError> {
         let mut line = serde_json::to_string(entry).map_err(|e| StoreError::Journal {
             path: self.path.clone(),
@@ -220,7 +293,20 @@ impl Journal {
         self.file
             .write_all(line.as_bytes())
             .map_err(io_err("appending to", &self.path))?;
-        self.file.flush().map_err(io_err("flushing", &self.path))
+        self.file.flush().map_err(io_err("flushing", &self.path))?;
+        if self.synced.elapsed() >= JOURNAL_SYNC_INTERVAL {
+            self.sync()?;
+        }
+        Ok(())
+    }
+
+    /// Forces appended entries to disk.
+    pub fn sync(&mut self) -> Result<(), StoreError> {
+        self.file
+            .sync_data()
+            .map_err(io_err("syncing", &self.path))?;
+        self.synced = std::time::Instant::now();
+        Ok(())
     }
 
     #[must_use]
@@ -233,11 +319,18 @@ impl Journal {
         project_path: &Path,
     ) -> Result<Option<JournalContents<T>>, StoreError> {
         let path = journal_path(project_path);
-        let file = match File::open(&path) {
-            Ok(f) => f,
+        match fs::metadata(&path) {
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(io_err("opening", &path)(e)),
-        };
+            Ok(m) if !m.is_file() => {
+                return Err(io_err("opening", &path)(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "not a regular file",
+                )));
+            }
+            Ok(_) => {}
+        }
+        let file = File::open(&path).map_err(io_err("opening", &path))?;
         let corrupt = |line: usize, message: String| StoreError::Journal {
             path: path.clone(),
             line,
@@ -294,5 +387,40 @@ impl Journal {
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(io_err("removing", &path)(e)),
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_limited_refuses_non_files_and_oversize() {
+        let dir = tempfile::tempdir().unwrap();
+        let ok = dir.path().join("ok.txt");
+        fs::write(&ok, "hello").unwrap();
+        assert_eq!(read_limited_string(&ok, 5).unwrap(), "hello");
+        assert_eq!(
+            read_limited(&ok, 4).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(
+            read_limited(dir.path(), 1 << 20).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput,
+            "directories are refused"
+        );
+        assert!(read_limited(&dir.path().join("missing"), 10).is_err());
+        #[cfg(unix)]
+        {
+            // An endless device must not be read.
+            let e = read_limited(Path::new("/dev/zero"), 1 << 20).unwrap_err();
+            assert_eq!(e.kind(), io::ErrorKind::InvalidInput);
+        }
+        fs::write(&ok, [0xff, 0xfe]).unwrap();
+        assert!(read_limited_string(&ok, 10).is_err(), "invalid UTF-8");
+        // Project loading applies it.
+        let dev = if cfg!(unix) { "/dev/zero" } else { "NUL" };
+        assert!(load(Path::new(dev)).is_err());
     }
 }

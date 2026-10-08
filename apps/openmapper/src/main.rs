@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! OpenMapper desktop application. Usage: `openmapper [project.omproj] [--play]`
-//! (`--play` starts the show transport immediately, e.g. for unattended shows).
+//! (`--play` starts the show immediately and minimises the control window once
+//! an output is open, for unattended shows).
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -35,13 +36,10 @@ fn main() -> ExitCode {
         "OpenMapper",
         options,
         Box::new(|cc| {
-            let opener: Arc<dyn om_media_core::VideoOpener> =
-                Arc::new(om_media_ffmpeg::FfmpegOpener);
-            let audio: Arc<dyn om_media_core::AudioOpener> =
-                Arc::new(om_media_ffmpeg::FfmpegOpener);
-            let mut app = om_ui_egui::OpenMapperApp::new(cc, path, Some(opener), Some(audio));
+            let adapters = om_platform::adapters();
+            let mut app = om_ui_egui::OpenMapperApp::new(cc, path, &adapters);
             if autoplay {
-                app.play();
+                app.run_show();
             }
             Ok(Box::new(app))
         }),

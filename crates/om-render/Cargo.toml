@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 om-types.workspace = true
 om-geom.workspace = true
+om-calibration.workspace = true
 om-project.workspace = true
 om-media-core.workspace = true
 om-gpu.workspace = true
