@@ -47,6 +47,15 @@ enum Action {
     /// Apply commands from a JSON file (an array, or one command per line)
     /// and save. Stops at the first rejected command without saving.
     Apply { path: PathBuf, commands: PathBuf },
+    /// Show what a project connects to outside the app (camera, network
+    /// video, DMX, control from other computers) and whether this user has
+    /// allowed it. With --allow, allow it as the app's "Allow for this
+    /// project" does — for shows set up without a screen (e.g. over SSH).
+    Trust {
+        path: PathBuf,
+        #[arg(long)]
+        allow: bool,
+    },
     /// Render the project's canvas offscreen to a PNG (8-bit sRGB).
     Render {
         path: PathBuf,
@@ -204,6 +213,34 @@ enum LiveAction {
     },
 }
 
+fn trust(path: &Path, allow: bool) -> Result<(), String> {
+    use om_engine::trust::{TrustStore, default_path, external};
+    let project = store::load(path).map_err(|e| e.to_string())?.project;
+    let items = external(&project);
+    if items.is_empty() {
+        println!("needs no permission (nothing leaves this computer)");
+        return Ok(());
+    }
+    println!("connects outside OpenMapper:");
+    for item in &items {
+        println!("  - {item}");
+    }
+    let store_path = default_path().ok_or("no per-user config folder (HOME/APPDATA unset)")?;
+    let mut trust = TrustStore::load(&store_path);
+    if allow && !trust.is_trusted(&project) {
+        trust.allow(&project)?;
+    }
+    if trust.is_trusted(&project) {
+        println!("allowed for this user ({})", store_path.display());
+    } else {
+        println!(
+            "held back until allowed: openmapper-cli trust --allow {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 fn main() -> ExitCode {
     match run(Cli::parse()) {
         Ok(()) => ExitCode::SUCCESS,
@@ -290,6 +327,7 @@ fn run(cli: Cli) -> Result<(), String> {
             println!("revision {}", session.project().revision);
             session.close().map_err(|e| e.to_string())
         }
+        Action::Trust { path, allow } => trust(&path, allow),
         Action::Render { path, out, at } => render(&path, &out, at),
         Action::RenderOutput {
             path,

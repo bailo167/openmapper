@@ -60,7 +60,9 @@ and network-stream inputs, NDI and stream outputs, DMX output, network
 control and DMX input stay **held back** until you allow them for that
 project (a bar lists them). The permission is remembered per user for that
 project and that exact list; adding a new destination later asks again
-(edits you make yourself keep the project allowed). See DECISIONS.md D-029.
+(edits you make yourself keep the project allowed). Without a screen,
+`openmapper-cli trust <project>` shows the list and `--allow` allows it for
+the current user (D-034). See DECISIONS.md D-029.
 
 ## OSC (UDP, default port 8010)
 

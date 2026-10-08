@@ -508,3 +508,39 @@ naming; a clean-room challenge resting on process rather than counsel's
 opinion; mistakes in LGPL compliance mechanics. The reference-product
 licence agreement is still to be archived by the owner as CLEANROOM.md
 requires (that step needs no solicitor).
+
+## D-034 — Show mode replaces minimising the control window; headless trust (2026-10-08)
+
+Found in the first install of a release archive on the Linux show machine
+(KDE Plasma, Wayland, one projector):
+
+- **`--play` showed a black, then frozen, projector.** Output windows are
+  egui immediate viewports, painted inside the main window's frame. `--play`
+  minimised the main window so it would not cover the output (KWin will not
+  raise a window without user input). On Wayland a client cannot tell it is
+  minimised and the compositor sends a minimised window no frame callbacks,
+  so the main frame — and every output — stopped; on macOS, Windows and X11
+  eframe repaints a minimised window only every 100 ms, capping outputs at
+  10 fps. The G-01 run missed it because its test content was static.
+  **Decision:** `--play` (and the new *Run show* button) puts the main
+  window itself in *show mode*: borderless fullscreen on the first enabled
+  output whose display is connected (waiting until one is), drawing that
+  output edge to edge with the pointer hidden. Further outputs still open
+  in their own windows. Escape returns to the editor; disabling or removing
+  the shown output leaves show mode; a display that disappears keeps the
+  window where it is. Deferred viewports were rejected: the canvas is
+  rendered in the main frame, so they would repaint a stale texture.
+- **Network control could not be allowed without a screen.** A project
+  with `controls.network` (or any other D-029 connection) is held back
+  until allowed in the app's bar, which a show machine set up over SSH
+  cannot click. **Decision:** `openmapper-cli trust <project>` lists the
+  project's external connections and whether this user allowed them;
+  `--allow` records the same per-user permission as the app's button. Running
+  it is the user's own explicit action on their own account, so D-029's
+  protection against a project from someone else is unchanged.
+- The desktop app now parses its arguments: `--help` and `--version` print
+  and exit, unknown options are an error (previously `openmapper --help`
+  opened the app). `displays` explains a missing graphical session
+  (`WAYLAND_DISPLAY`/`DISPLAY` unset) instead of the library's parse error.
+- The workspace version is **1.0.0**, and the release workflow refuses a
+  `v*` tag whose archives were built with a different version.

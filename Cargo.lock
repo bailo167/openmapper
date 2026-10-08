@@ -1660,7 +1660,7 @@ checksum = "aedcfb3409746eddb02b9e19ebda1c3394f759a152e48ee875a0844d1b955484"
 
 [[package]]
 name = "fixturegen"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "clap",
  "om-media-ffmpeg",
@@ -3198,7 +3198,7 @@ dependencies = [
 
 [[package]]
 name = "om-audio"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "cpal",
  "om-media-core",
@@ -3207,7 +3207,7 @@ dependencies = [
 
 [[package]]
 name = "om-calibration"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "om-project",
  "om-types",
@@ -3219,7 +3219,7 @@ dependencies = [
 
 [[package]]
 name = "om-command"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "om-geom",
  "om-project",
@@ -3233,7 +3233,7 @@ dependencies = [
 
 [[package]]
 name = "om-dmx"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "om-geom",
  "om-project",
@@ -3244,7 +3244,7 @@ dependencies = [
 
 [[package]]
 name = "om-engine"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "image",
  "om-audio",
@@ -3271,7 +3271,7 @@ dependencies = [
 
 [[package]]
 name = "om-geom"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "glam",
  "om-types",
@@ -3283,7 +3283,7 @@ dependencies = [
 
 [[package]]
 name = "om-gpu"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "pollster",
  "thiserror 2.0.21",
@@ -3292,7 +3292,7 @@ dependencies = [
 
 [[package]]
 name = "om-isf"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "naga",
  "regex",
@@ -3303,7 +3303,7 @@ dependencies = [
 
 [[package]]
 name = "om-media-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "image",
  "om-project",
@@ -3314,7 +3314,7 @@ dependencies = [
 
 [[package]]
 name = "om-media-ffmpeg"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "ffmpeg-next",
  "objc2-av-foundation",
@@ -3328,7 +3328,7 @@ dependencies = [
 
 [[package]]
 name = "om-midi"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "midir",
  "om-command",
@@ -3339,7 +3339,7 @@ dependencies = [
 
 [[package]]
 name = "om-ndi"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "libloading 0.8.9",
  "om-media-core",
@@ -3348,7 +3348,7 @@ dependencies = [
 
 [[package]]
 name = "om-osc"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "om-project",
  "om-show",
@@ -3359,7 +3359,7 @@ dependencies = [
 
 [[package]]
 name = "om-oscquery"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "mdns-sd",
  "om-osc",
@@ -3370,7 +3370,7 @@ dependencies = [
 
 [[package]]
 name = "om-output"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "display-info",
  "om-project",
@@ -3379,7 +3379,7 @@ dependencies = [
 
 [[package]]
 name = "om-platform"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "om-media-core",
  "om-media-ffmpeg",
@@ -3390,7 +3390,7 @@ dependencies = [
 
 [[package]]
 name = "om-plugin-api"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3399,7 +3399,7 @@ dependencies = [
 
 [[package]]
 name = "om-plugin-host"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "om-plugin-api",
  "thiserror 2.0.21",
@@ -3408,7 +3408,7 @@ dependencies = [
 
 [[package]]
 name = "om-project"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "om-geom",
  "om-time",
@@ -3422,7 +3422,7 @@ dependencies = [
 
 [[package]]
 name = "om-render"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "bytemuck",
  "half",
@@ -3440,7 +3440,7 @@ dependencies = [
 
 [[package]]
 name = "om-show"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "om-command",
  "om-project",
@@ -3450,7 +3450,7 @@ dependencies = [
 
 [[package]]
 name = "om-spout"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "half",
  "om-media-core",
@@ -3460,7 +3460,7 @@ dependencies = [
 
 [[package]]
 name = "om-syphon"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "cc",
  "om-media-core",
@@ -3469,7 +3469,7 @@ dependencies = [
 
 [[package]]
 name = "om-time"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "proptest",
  "serde",
@@ -3479,7 +3479,7 @@ dependencies = [
 
 [[package]]
 name = "om-types"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3489,7 +3489,7 @@ dependencies = [
 
 [[package]]
 name = "om-ui-egui"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "eframe",
  "egui",
@@ -3525,7 +3525,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "openmapper"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "eframe",
  "om-platform",
@@ -3534,7 +3534,7 @@ dependencies = [
 
 [[package]]
 name = "openmapper-cli"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "clap",
  "image",
@@ -6046,7 +6046,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "cargo_metadata",

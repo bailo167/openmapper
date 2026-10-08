@@ -9,6 +9,7 @@ mod gpu;
 mod live_ui;
 mod output_ui;
 mod plugin_ui;
+mod show_mode;
 mod show_ui;
 
 use std::path::PathBuf;
@@ -62,10 +63,8 @@ pub struct OpenMapperApp {
     /// Output windows currently open, with when each opened (they are
     /// raised until focused, for a short while after opening).
     open_outputs: std::collections::HashMap<OutputId, Instant>,
-    /// Unattended show: minimise the control window once an output is open,
-    /// so it cannot cover the show on a single display (Wayland compositors
-    /// refuse to raise windows without user input).
-    minimise_for_show: bool,
+    /// Unattended show: the main window draws an output fullscreen.
+    show_mode: show_mode::ShowMode,
     dmx_ui: dmx_ui::DmxUi,
     displays: Vec<Display>,
     display_error: Option<String>,
@@ -125,7 +124,7 @@ impl OpenMapperApp {
             dmx_ui: dmx_ui::DmxUi::default(),
             live_ui: live_ui::LiveUi::new(adapters.live.clone().map(om_engine::Discovery::new)),
             open_outputs: std::collections::HashMap::new(),
-            minimise_for_show: false,
+            show_mode: show_mode::ShowMode::default(),
             trust: om_engine::trust::TrustStore::load_default(),
             trust_checked: None,
         };
@@ -144,11 +143,13 @@ impl OpenMapperApp {
         self.transport.play(Instant::now());
     }
 
-    /// Unattended show: plays, and minimises the control window once an
-    /// output window is open so the show is never hidden behind it.
+    /// Unattended show: plays, and turns the main window into the first
+    /// enabled output (fullscreen on its display) as soon as that display
+    /// is connected, so the editor never covers the show. Escape returns to
+    /// the editor.
     pub fn run_show(&mut self) {
         self.play();
-        self.minimise_for_show = true;
+        self.show_mode.request();
     }
 
     fn info(&mut self, msg: impl Into<String>) {
@@ -323,6 +324,17 @@ impl OpenMapperApp {
                 self.transport.seek(RationalTime::ZERO, now);
             }
             ui.monospace(clock(self.transport.time(now)));
+            if ui
+                .button("Run show")
+                .on_hover_text(
+                    "Play and show the first enabled output fullscreen in this window \
+                     (Escape returns here)",
+                )
+                .clicked()
+            {
+                self.run_show();
+                self.info("Run show: waiting for an enabled output whose display is connected");
+            }
             ui.separator();
             self.master_controls(ui);
         });
@@ -1220,9 +1232,10 @@ impl OpenMapperApp {
         });
     }
 
-    fn canvas_view(&mut self, ui: &mut egui::Ui) {
+    /// Renders this frame's canvas (also feeds outputs and audio).
+    fn render_canvas(&mut self) -> Option<egui::TextureId> {
         let project_dir = self.session.project_dir().map(PathBuf::from);
-        let texture = match &mut self.viewer {
+        match &mut self.viewer {
             Some(v) => {
                 let effective = self.effective.as_ref().unwrap_or(self.session.project());
                 v.update(
@@ -1233,7 +1246,11 @@ impl OpenMapperApp {
                 )
             }
             None => None,
-        };
+        }
+    }
+
+    fn canvas_view(&mut self, ui: &mut egui::Ui) {
+        let texture = self.render_canvas();
         let canvas = self.session.project().canvas;
         let avail = ui.available_rect_before_wrap();
         let rect = fit_rect(avail.shrink(8.0), (canvas.width, canvas.height));
@@ -1426,7 +1443,11 @@ impl OpenMapperApp {
         };
         let outputs = self.session.project().outputs.clone();
         let mut shown = std::collections::HashMap::new();
-        for o in outputs.iter().filter(|o| o.enabled) {
+        let in_main_window = self.show_mode.output();
+        for o in outputs
+            .iter()
+            .filter(|o| o.enabled && Some(o.id) != in_main_window)
+        {
             let Some(display) = o
                 .display
                 .as_ref()
@@ -1487,18 +1508,77 @@ impl OpenMapperApp {
                 shown.insert(o.id, opened);
             }
         }
-        if self.minimise_for_show && !shown.is_empty() {
-            ctx.send_viewport_cmd_to(
-                egui::ViewportId::ROOT,
-                egui::ViewportCommand::Minimized(true),
-            );
-            self.minimise_for_show = false;
-        }
         self.open_outputs = shown;
     }
 
     fn preview_id(&self) -> Option<egui::TextureId> {
         self.viewer.as_ref().and_then(|v| v.preview_id())
+    }
+
+    /// Switches the main window between the editor and a fullscreen output
+    /// (see [`show_mode`]). True while it shows an output.
+    fn update_show_mode(&mut self, ctx: &egui::Context) -> bool {
+        use egui::{ViewportCommand, ViewportId};
+        let project = self.session.project();
+        match self.show_mode.update(&project.outputs, &self.displays) {
+            show_mode::Change::Enter { monitor, .. } => {
+                ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Decorations(false));
+                ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::SetMonitor(monitor));
+                ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Focus);
+            }
+            show_mode::Change::Leave => Self::restore_editor_window(ctx),
+            show_mode::Change::None => {}
+        }
+        self.show_mode.output().is_some()
+    }
+
+    fn restore_editor_window(ctx: &egui::Context) {
+        use egui::{ViewportCommand, ViewportId};
+        ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Fullscreen(false));
+        ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Decorations(true));
+    }
+
+    /// The main window in show mode: the output, edge to edge, no pointer.
+    /// Escape returns to the editor (the output then opens in its own
+    /// window, as it does when editing).
+    fn show_mode_view(&mut self, ui: &mut egui::Ui) {
+        let preview = self.render_canvas();
+        let rect = ui.max_rect();
+        let output = self.show_mode.output().and_then(|id| {
+            self.session
+                .project()
+                .outputs
+                .iter()
+                .find(|o| o.id == id)
+                .cloned()
+        });
+        let ppp = ui.ctx().pixels_per_point();
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let size = (
+            (rect.width() * ppp).round() as u32,
+            (rect.height() * ppp).round() as u32,
+        );
+        let texture = match (&mut self.viewer, &output) {
+            (Some(v), Some(o)) => v.output_texture(o, size).or(preview),
+            _ => preview,
+        };
+        let painter = ui.painter();
+        painter.rect_filled(rect, 0.0, Color32::BLACK);
+        if let Some(t) = texture {
+            painter.image(
+                t,
+                rect,
+                egui::Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                Color32::WHITE,
+            );
+        }
+        if ui.rect_contains_pointer(rect) {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::None);
+        }
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) && self.show_mode.leave() {
+            Self::restore_editor_window(ui.ctx());
+            self.info("Left show mode (Run show returns to it)");
+        }
     }
 
     /// While allowed, the user's own edits keep the project allowed; while
@@ -1831,22 +1911,28 @@ impl eframe::App for OpenMapperApp {
             ctx.request_repaint();
         }
         self.handle_shortcuts(&ctx);
-        egui::Panel::top("menu").show(ui, |ui| self.top_bar(ui));
-        self.trust_bar(ui);
-        egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
-        egui::Panel::bottom("show")
-            .resizable(true)
-            .default_size(220.0)
-            .show(ui, |ui| self.show_panel(ui));
-        egui::Panel::left("project")
-            .default_size(260.0)
-            .show(ui, |ui| self.left_panel(ui));
-        egui::Panel::right("inspector")
-            .default_size(260.0)
-            .show(ui, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| self.inspector(ui));
-            });
-        egui::CentralPanel::default().show(ui, |ui| self.canvas_view(ui));
+        if self.update_show_mode(&ctx) {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ui, |ui| self.show_mode_view(ui));
+        } else {
+            egui::Panel::top("menu").show(ui, |ui| self.top_bar(ui));
+            self.trust_bar(ui);
+            egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
+            egui::Panel::bottom("show")
+                .resizable(true)
+                .default_size(220.0)
+                .show(ui, |ui| self.show_panel(ui));
+            egui::Panel::left("project")
+                .default_size(260.0)
+                .show(ui, |ui| self.left_panel(ui));
+            egui::Panel::right("inspector")
+                .default_size(260.0)
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| self.inspector(ui));
+                });
+            egui::CentralPanel::default().show(ui, |ui| self.canvas_view(ui));
+        }
         self.output_windows(&ctx);
         self.apply_pending();
         if self.transport.is_playing() {

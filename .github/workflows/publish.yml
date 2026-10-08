@@ -29,7 +29,22 @@ jobs:
           merge-multiple: true
       - name: merge and verify the checksums
         working-directory: dist
+        env:
+          REF: ${{ github.ref }}
+          TAG: ${{ github.ref_name }}
         run: |
+          # A release tag must match the version the binaries were built
+          # with (workspace version in Cargo.toml), or v1.0.0 would ship
+          # archives that call themselves something else.
+          if [ "${REF#refs/tags/v}" != "$REF" ]; then
+            for a in openmapper-*.tar.gz openmapper-*.zip; do
+              [ -e "$a" ] || continue
+              case "$a" in
+                "openmapper-${TAG#v}-"*) ;;
+                *) echo "::error::$a does not match tag $TAG (set the workspace version in Cargo.toml)"; exit 1 ;;
+              esac
+            done
+          fi
           cat SHA256SUMS.* | sort -u -k2 > SHA256SUMS
           rm SHA256SUMS.*
           sha256sum -c SHA256SUMS

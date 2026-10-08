@@ -96,3 +96,80 @@ fn invalid_files_fail_cleanly() {
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("newer than this build"));
 }
+
+/// A show machine set up over SSH has no screen to click "Allow for this
+/// project" on; `trust --allow` records the same per-user permission, so
+/// network control is not held back when the app starts the show.
+#[test]
+fn trust_allows_a_project_without_the_app() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config");
+    let user = |c: &mut Command| {
+        c.env("HOME", &config)
+            .env("XDG_CONFIG_HOME", &config)
+            .env("APPDATA", &config);
+    };
+    let proj = dir.path().join("show.omproj");
+    let cmds = dir.path().join("cmds.jsonl");
+    assert!(cli().arg("new").arg(&proj).status().unwrap().success());
+
+    let mut c = cli();
+    user(&mut c);
+    let out = c.arg("trust").arg(&proj).output().unwrap();
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("needs no permission"));
+
+    std::fs::write(
+        &cmds,
+        r#"{"type":"set_controls","controls":{"osc_port":8010,"oscquery_port":8011,"network":true,"midi":[]}}"#,
+    )
+    .unwrap();
+    let applied = cli().arg("apply").arg(&proj).arg(&cmds).status().unwrap();
+    assert!(applied.success());
+
+    let mut c = cli();
+    user(&mut c);
+    let out = c.arg("trust").arg(&proj).output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(out.status.success());
+    assert!(
+        text.contains("OSC / OSCQuery control from other computers"),
+        "{text}"
+    );
+    assert!(text.contains("held back until allowed"), "{text}");
+
+    let mut c = cli();
+    user(&mut c);
+    let out = c.args(["trust", "--allow"]).arg(&proj).output().unwrap();
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("allowed for this user"));
+
+    // Persisted where the app looks for it.
+    let project = om_project::store::load(&proj).unwrap().project;
+    let store_file = std::fs::read_dir(&config)
+        .unwrap()
+        .flatten()
+        .flat_map(|e| walk(&e.path()))
+        .find(|p| p.ends_with("OpenMapper/trusted-projects.json"))
+        .unwrap();
+    let store = om_engine::trust::TrustStore::load(&store_file);
+    assert!(store.is_trusted(&project));
+
+    let mut c = cli();
+    user(&mut c);
+    let out = c.arg("trust").arg(&proj).output().unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("allowed for this user"));
+}
+
+fn walk(p: &std::path::Path) -> Vec<std::path::PathBuf> {
+    if p.is_dir() {
+        std::fs::read_dir(p)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .flat_map(|e| walk(&e.path()))
+            .collect()
+    } else {
+        vec![p.to_owned()]
+    }
+}

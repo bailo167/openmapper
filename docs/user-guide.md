@@ -35,6 +35,19 @@ openmapper-*/`), or allow the app under System Settings ▸ Privacy &
 Security ▸ *Open Anyway*. On **Windows**, SmartScreen asks once: *More
 info* ▸ *Run anyway*.
 
+On **Linux**, to list OpenMapper with your other applications, save this
+as `~/.local/share/applications/openmapper.desktop` (with the path where
+you unpacked it):
+
+```ini
+[Desktop Entry]
+Type=Application
+Name=OpenMapper
+Exec=/home/you/Applications/openmapper/openmapper %f
+Icon=video-display
+Categories=AudioVideo;Video;
+```
+
 Video and audio play through the FFmpeg libraries included in the archive
 (`lib/`; LGPL — licence, source reference and build recipe in `ffmpeg/`).
 They decode the usual delivery and intermediate formats (H.264, ProRes,
@@ -59,7 +72,13 @@ Vizrt.
   the status bar.
 - **Missing media** (moved files): use *Relink* with a folder; files are found
   by name, preferring matching folder structure, in one undo step.
-- To start a show unattended: `openmapper show.omproj --play`.
+- To start a show unattended: `openmapper show.omproj --play`. The app
+  plays and its window becomes the first enabled output, fullscreen on that
+  output's display (it waits until the display is connected); other outputs
+  open in their own windows. **Escape** returns to the editor; **Run show**
+  in the toolbar goes back. To start the show when the computer starts, add
+  that command to your desktop's autostart (log in automatically, and turn
+  off screen locking and display sleep).
 
 ### Projects from other people
 
@@ -68,7 +87,10 @@ addresses, or accept control from other computers. When you open a project
 that does this and you have not allowed it before, those connections are
 **held back** and a bar lists them; choose **Allow for this project** if you
 trust it. The choice is remembered for that project. If the project later
-asks for something new, you are asked again.
+asks for something new, you are asked again. On a show computer without a
+screen to click on (set up over SSH), `openmapper-cli trust show.omproj`
+lists what is held back and `openmapper-cli trust --allow show.omproj`
+allows it for that user account.
 
 ## Canvas, surfaces and media
 
@@ -115,7 +137,10 @@ shows what arrives on the network; `dmx discover` finds Art-Net nodes.
   and **DMX input** (Art-Net/sACN, with learn) control parameters and cues.
   OSC and OSCQuery accept connections from this computer only until you tick
   *Accept control from other computers*; only do that on a trusted show
-  network.
+  network, and open UDP 8010 and TCP 8011 in the show computer's firewall.
+  Any OSC app can then send `/openmapper/cue/go` and the other addresses in
+  `control.md`; browsing `http://<show-computer>:8011/` lists every
+  parameter, cue and timeline with its current value.
 
 ## Sharing video with other applications
 

@@ -80,7 +80,13 @@ pub struct DisplayError(String);
 
 /// Lists connected displays in OS enumeration order.
 pub fn list_displays() -> Result<Vec<Display>, DisplayError> {
-    let all = display_info::DisplayInfo::all().map_err(|e| DisplayError(e.to_string()))?;
+    let all = display_info::DisplayInfo::all().map_err(|e| {
+        DisplayError(explain_display_error(
+            &e.to_string(),
+            cfg!(all(unix, not(target_os = "macos"))),
+            |k| std::env::var_os(k).is_some_and(|v| !v.is_empty()),
+        ))
+    })?;
     Ok(all
         .into_iter()
         .enumerate()
@@ -108,6 +114,22 @@ pub fn list_displays() -> Result<Vec<Display>, DisplayError> {
             }
         })
         .collect())
+}
+
+/// On Linux/BSD, display enumeration needs the graphical session; from an
+/// SSH shell or a system service `WAYLAND_DISPLAY` and `DISPLAY` are unset
+/// and the library's own message ("error during parsing display string")
+/// does not say so.
+fn explain_display_error(raw: &str, unix_desktop: bool, is_set: impl Fn(&str) -> bool) -> String {
+    if unix_desktop && !is_set("WAYLAND_DISPLAY") && !is_set("DISPLAY") {
+        format!(
+            "{raw} (no graphical session: WAYLAND_DISPLAY and DISPLAY are unset; run this \
+             from the desktop, or set them to the session's, e.g. WAYLAND_DISPLAY=wayland-0 \
+             XDG_RUNTIME_DIR=/run/user/$(id -u))"
+        )
+    } else {
+        raw.to_owned()
+    }
 }
 
 /// Finds the connected display for `target`: an exact name match first (the
@@ -169,6 +191,22 @@ fn edid_monitor_name(edid: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: over SSH `openmapper-cli displays` failed with only
+    /// "error during parsing display string".
+    #[test]
+    fn display_error_names_the_missing_session() {
+        let raw = "Connection closed, error during parsing display string";
+        let none = explain_display_error(raw, true, |_| false);
+        assert!(none.starts_with(raw));
+        assert!(none.contains("no graphical session"), "{none}");
+        assert_eq!(explain_display_error(raw, true, |k| k == "DISPLAY"), raw);
+        assert_eq!(
+            explain_display_error(raw, true, |k| k == "WAYLAND_DISPLAY"),
+            raw
+        );
+        assert_eq!(explain_display_error(raw, false, |_| false), raw);
+    }
 
     fn d(index: u32, name: &str) -> Display {
         Display {
