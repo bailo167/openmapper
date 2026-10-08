@@ -12,6 +12,8 @@
 #
 # Environment:
 #   FFMPEG_SOURCE_DIR   use this FFmpeg checkout instead of cloning
+#   OM_FFMPEG_BUILD_DIR scratch directory for the clone and objects
+#                       (default: PREFIX-build)
 #   OM_FFMPEG_JOBS      parallel make jobs (default: all CPUs)
 #   OM_FFMPEG_SOURCE_ARCHIVE=1  also write the complete corresponding
 #                       source archive (git archive of the pinned commit)
@@ -29,7 +31,7 @@ repo="$(cd "$here/../.." && pwd)"
 prefix="${1:-$repo/target/ffmpeg}"
 mkdir -p "$prefix"
 prefix="$(cd "$prefix" && pwd)"
-build="$prefix-build"
+build="${OM_FFMPEG_BUILD_DIR:-$prefix-build}"
 mkdir -p "$build"
 
 say() { echo "ffmpeg-build: $*" >&2; }

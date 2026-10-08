@@ -10,7 +10,7 @@ verify downloads with checksums and Sigstore.
 |---|---|---|
 | `openmapper-<version>-<os>-<arch>.tar.gz` (one per OS) | `cargo xtask dist` in `package.yml` | Binaries unsigned until the accounts below exist |
 | `ffmpeg-<tag>-src.tar.gz` | Linux package job | Covered by `SHA256SUMS` |
-| `SHA256SUMS` | `release.yml`, merged from the three OS jobs | **Yes**: `SHA256SUMS.sigstore.json` |
+| `SHA256SUMS` | `publish.yml` (called by `release.yml`), merged from the three OS jobs | **Yes**: `SHA256SUMS.sigstore.json` |
 | `PROVENANCE.txt` | `cargo xtask provenance --history` | Covered by the release page only |
 
 ## Verifying a download (users)
@@ -18,14 +18,14 @@ verify downloads with checksums and Sigstore.
 ```
 sha256sum -c SHA256SUMS            # macOS: shasum -a 256 -c SHA256SUMS
 cosign verify-blob --bundle SHA256SUMS.sigstore.json \
-  --certificate-identity https://github.com/bailo167/openmapper/.github/workflows/release.yml@refs/tags/vX.Y.Z \
+  --certificate-identity https://github.com/bailo167/openmapper/.github/workflows/publish.yml@refs/tags/vX.Y.Z \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   SHA256SUMS
 ```
 
 `cosign` is a single binary from <https://github.com/sigstore/cosign>. A
 successful verification proves the checksum file was produced by this
-repository's release workflow at that tag, recorded in the public Sigstore
+repository's release pipeline (the `publish.yml` job, called by `release.yml`) at that tag, recorded in the public Sigstore
 transparency log; the checksums then cover every archive.
 
 ### Running unsigned binaries

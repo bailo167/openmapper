@@ -22,6 +22,8 @@ env:
   # The smoke test must render through a GPU (lavapipe, WARP, Metal).
   OM_REQUIRE_GPU: "1"
   FFMPEG_DIR: ${{ github.workspace }}/target/ffmpeg
+  # Clone and objects outside target/, so rust-cache does not carry them.
+  OM_FFMPEG_BUILD_DIR: ${{ runner.temp }}/ffmpeg-build
 
 jobs:
   package:

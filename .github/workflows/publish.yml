@@ -1,0 +1,80 @@
+# Merges the per-OS checksum files from package.yml, signs the result
+# keylessly with Sigstore (cosign, GitHub Actions OIDC identity), verifies
+# the signature as a user would, and optionally opens a *draft* GitHub
+# release. Called by release.yml (draft on tags) and by ci.yml on manual
+# runs (signing only), so the signing path is exercised before any release.
+#
+# The caller grants the permissions: `id-token: write` always, and
+# `contents: write` only when draft_release is true.
+name: publish
+
+on:
+  workflow_call:
+    inputs:
+      draft_release:
+        description: Open a draft GitHub release for the current tag
+        type: boolean
+        default: false
+
+jobs:
+  publish:
+    name: sign checksums${{ inputs.draft_release && ' and draft the release' || '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: openmapper-*
+          path: dist
+          merge-multiple: true
+      - name: merge and verify the checksums
+        working-directory: dist
+        run: |
+          cat SHA256SUMS.* | sort -u -k2 > SHA256SUMS
+          rm SHA256SUMS.*
+          sha256sum -c SHA256SUMS
+          ls -l
+      - uses: sigstore/cosign-installer@v3
+      - name: sign SHA256SUMS (Sigstore keyless, GitHub OIDC)
+        working-directory: dist
+        run: cosign sign-blob --yes --bundle SHA256SUMS.sigstore.json SHA256SUMS
+      # The certificate's identity is this reusable workflow (the job's
+      # workflow ref) at the tag or branch that ran it; the calling workflow
+      # is recorded in the certificate's GitHub Workflow Ref extension.
+      - name: verify the signature as a user would
+        working-directory: dist
+        run: |
+          cosign verify-blob --bundle SHA256SUMS.sigstore.json \
+            --certificate-identity "https://github.com/${{ github.repository }}/.github/workflows/publish.yml@${{ github.ref }}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ github.ref_name }}
+          path: dist/*
+          retention-days: 30
+      - name: draft the GitHub release (tags only)
+        if: inputs.draft_release && startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          {
+            echo "**Draft — not yet reviewed by the owner.** Known gaps: RELEASE_GAPS.md at this tag."
+            echo
+            echo "## Verify your download"
+            echo
+            echo '```'
+            echo "sha256sum -c SHA256SUMS   # or: shasum -a 256 -c SHA256SUMS"
+            echo "cosign verify-blob --bundle SHA256SUMS.sigstore.json \\"
+            echo "  --certificate-identity https://github.com/${{ github.repository }}/.github/workflows/publish.yml@refs/tags/$TAG \\"
+            echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS"
+            echo '```'
+            echo
+            echo "The binaries are not code-signed (docs/release/signing.md explains the"
+            echo "Gatekeeper and SmartScreen steps). Each archive bundles LGPL FFmpeg"
+            echo "shared libraries; their complete source is attached as"
+            echo "\`ffmpeg-*-src.tar.gz\` and the build recipe is in \`ffmpeg/\` inside"
+            echo "the archive. PROVENANCE.txt is the clean-room scan of this tag's history."
+          } > notes.md
+          gh release create "$TAG" --draft --verify-tag --title "OpenMapper $TAG" --notes-file notes.md dist/*

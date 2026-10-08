@@ -447,14 +447,16 @@ development only) or BtbN builds.
 Delegated by the owner (G-08). No Apple Developer, Windows code-signing or
 long-term signing key exists.
 
-- **Checksums are signed keylessly with Sigstore** from `release.yml`:
-  `cosign sign-blob` with the workflow's GitHub Actions OIDC identity
-  produces `SHA256SUMS.sigstore.json`. There is no private key to generate,
-  store or lose; the signature binds the files to this repository, workflow
-  file and tag, recorded in the public Rekor transparency log (which exposes
-  the repository name — acceptable for a project that is going public). The
-  workflow verifies its own signature the way a user would. A minisign or
-  GPG release key can be added later without changing anything else.
+- **Checksums are signed keylessly with Sigstore** by `publish.yml`, called
+  from `release.yml`: `cosign sign-blob` with the job's GitHub Actions OIDC
+  identity produces `SHA256SUMS.sigstore.json`. There is no private key to
+  generate, store or lose; the signature binds the files to this repository,
+  the `publish.yml` workflow and the tag, recorded in the public Rekor
+  transparency log (which exposes the repository name — acceptable for a
+  project that is going public). The job verifies its own signature the way
+  a user would, and `ci.yml`'s manual runs call the same job (without a
+  release) so the signing path is proven before the first tag. A minisign
+  or GPG release key can be added later without changing anything else.
 - **Binary code signing is wired but inactive.** `cargo xtask dist` runs
   `OM_SIGN_COMMAND` on the staging directory before archiving;
   `package.yml` enables `.github/scripts/sign-macos.sh` (Developer ID,

@@ -85,3 +85,15 @@ jobs:
     needs: gate-a
     uses: ./.github/workflows/package.yml
     secrets: inherit
+
+  # Exercises the keyless checksum signing of release.yml (publish.yml)
+  # without creating a release, so it is proven before the first tag.
+  sign:
+    if: github.event_name == 'workflow_dispatch'
+    needs: package
+    uses: ./.github/workflows/publish.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      draft_release: false

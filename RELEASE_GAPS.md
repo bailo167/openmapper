@@ -95,12 +95,15 @@ archive unless the staged binaries load the bundled build and pass
 `openmapper-cli ffmpeg --require-release`; `smoke` decodes a clip through
 the unpacked archive; the complete corresponding source archive is attached
 to each release. Users can replace the libraries (docs/media/ffmpeg.md).
-**Remaining for the owner:** nothing to decide; the CI `package` job on
-macOS and Windows must be green (first run after this change).
+**Remaining for the owner:** nothing. The CI `package` job built, bundled
+and smoke-tested the archive on all three OSes (run 77, 2026-10-08).
 
 ### G-08 Signing and notarisation — keyless checksums now, code signing when accounts exist (D-032)
-`release.yml` signs `SHA256SUMS` with Sigstore using the workflow's GitHub
-OIDC identity and verifies it; no key to manage. macOS Developer ID
+`release.yml` signs `SHA256SUMS` with Sigstore (via `publish.yml`) using the
+job's GitHub OIDC identity and verifies it; no key to manage. The same
+signing job runs in manual `ci` runs, so it is exercised on this branch;
+`release.yml` itself can only be dispatched once it exists on the default
+branch. macOS Developer ID
 signing/notarisation and Windows Authenticode are implemented in
 `.github/scripts/` and run automatically once the secrets listed in
 docs/release/signing.md exist; until then binaries are unsigned and the
