@@ -31,7 +31,7 @@
   priority: P0
   status: implemented-unverified
   source: [public-doc]
-  platforms: { macos: pending, windows: pending, linux: pass }
+  platforms: { macos: pass, windows: pending, linux: pass }
   tests: [hardware: G-01 projector run]
   notes: >-
     Linux physical test 2026-10-08: XGIMI HORIZON 20 projector on octv01
@@ -46,5 +46,17 @@
     showed `--play` leaving the projector black/frozen on Wayland, fixed by
     show mode (D-034, show_mode tests) and re-verified on the projector with
     moving video, autostarted at boot. Hot-plug waived for v1 (owner).
-    Still open: sleep/wake, macOS and Windows projector runs.
+    2026-10-09, CI archive of 2fab89a (run 37894912943): projector standby
+    and wake under the running octv01 show — HDMI hot-plug dropped for ~2 s
+    on sleep and on wake; the same process stayed fullscreen and in front,
+    output moving, OSC answering throughout. macOS (MacBook Air M4, macOS
+    26.6.2) drove the same projector for 30 minutes with `--play`, wirelessly:
+    AirPlay extended display "octv01 (AirPlay)" (1920×1080 @ 60 Hz,
+    enumerated and targeted by name) received by UxPlay on octv01 and shown
+    over its HDMI. Burned-in media timecode vs wall clock within ±17 ms at
+    7 points over 27 passes of a 60 s loop (no drift, no loop gap);
+    57.3 → 57.9 fps delivered at start/end; RSS 389–455 MiB with no trend.
+    Not covered: a directly cabled projector on macOS (EDID name),
+    projector power-cycle at the wall (owner declined), sleep of the
+    computer itself. Still open: Windows projector run.
   known_differences: []

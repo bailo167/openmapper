@@ -1,6 +1,6 @@
 # Release gaps — OpenMapper 1.0
 
-**Verdict (2026-10-08, evening): NOT READY — close.** Every software
+**Verdict (2026-10-09): NOT READY — close.** Every software
 requirement is met. The owner waived the remaining hardware sign-offs for
 v1 as **"software-verified, not hardware-verified"** (DMX, MIDI,
 calibration, hot-plug, Windows/Linux cameras, NDI on Windows/Linux, the
@@ -8,22 +8,24 @@ calibration, hot-plug, Windows/Linux cameras, NDI on Windows/Linux, the
 review (G-10). The release archives were installed and run on real
 machines for the first time (macOS, and the Linux show machine, which now
 boots into the show and is controlled from the Mac over OSC); that found
-and fixed a P0 output bug (D-034). CI runs again (G-13 resolved
-2026-10-09: the repository is now public). Still open: installing the CI
-archive of the 1.0.0 commit on octv01, the Windows clean install and
-macOS/Windows projector runs (G-12, G-01), and the owner's go-ahead to tag.
+and fixed a P0 output bug (D-034). CI runs again (the repository is now
+public) and built, smoke-tested and signed the 1.0.0 archives on all
+three OSes (G-13, run 37894912943); the Linux one runs the show on
+octv01. The macOS projector run and projector sleep/wake passed on
+2026-10-09 (G-01). Still open: the Windows clean install and Windows
+projector run (G-12, G-01), and the owner's go-ahead to tag.
 Per prompts/10-release.md, a release is never made because a date arrived.
 
 Status of the gate (prompts/10-release.md):
 
 | Requirement | State |
 |---|---|
-| All P0/P1 parity rows verified or waived | **52 of 58 verified; 5 waived** for v1 as software-verified, not hardware-verified (owner, 2026-10-08: camera, NDI, DMX node, both calibration rows); `output.fullscreen-display` passes on Linux, macOS/Windows projector runs open (G-01). 1 P2 row deferred (DeckLink, D-023). |
+| All P0/P1 parity rows verified or waived | **52 of 58 verified; 5 waived** for v1 as software-verified, not hardware-verified (owner, 2026-10-08: camera, NDI, DMX node, both calibration rows); `output.fullscreen-display` passes on Linux and macOS, Windows projector run open (G-01). 1 P2 row deferred (DeckLink, D-023). |
 | Clean macOS/Windows/Linux package install | Archive bundles an LGPL FFmpeg (D-031); `cargo xtask dist` verifies the bundle, `smoke` decodes video from the unpacked archive; CI `package` job on all three OSes. **macOS and Linux installs from the CI archive done 2026-10-08** (G-12); Windows pending. Binaries unsigned for 1.0, owner's decision (G-08). |
 | 12–24 h reference-system soak | Tooling ready (`openmapper-cli soak`, GPU resources + resident memory); 1-hour software soak passed (stable GPU resources; memory 343→361 MiB peak, to be confirmed flat over 12–24 h; docs/release/soak.md). **Waived for v1** by the owner (G-09). |
 | Crash/recovery injection tests | Verified: 40 random process kills per run, 600 locally (M9). |
 | Project migration tests | Verified: N-2 chain, v1 compatibility fixture (M9). |
-| Physical projector validation | **Linux passed**, including boot-into-show (G-01). macOS/Windows projector runs open; physical calibration waived (G-04). |
+| Physical projector validation | **Linux passed**, including boot-into-show and projector sleep/wake; **macOS passed** (30 minutes over AirPlay) (G-01). Windows projector run open; physical calibration waived (G-04). |
 | MIDI / DMX / live-I/O sign-off where hardware exists | Software verified on 3-OS CI (virtual MIDI, loopback DMX, Syphon, Spout); physical sign-off **waived for v1** by the owner (G-02, G-03, G-05, G-06). OSC/OSCQuery over a real LAN verified (Mac → octv01). |
 | Dependency / licence / NOTICE audit | Done: docs/release/licence-audit.md; `cargo deny` clean; `THIRD_PARTY_LICENSES.txt` generated into every archive, now including FFmpeg's notice and the NDI attribution. No legal confirmation (G-10 waived). |
 | FFmpeg distribution audit | **Decided and implemented** (G-07, D-031): bundled minimal LGPL build with source, recipe and policy check. |
@@ -35,8 +37,8 @@ Status of the gate (prompts/10-release.md):
 
 ## Blocking items
 
-Still blocking: G-01 (macOS/Windows projector runs, sleep/wake) and G-12
-(Windows install). G-13 (CI) is resolved. G-02…G-06 and G-09 are waived for v1
+Still blocking: G-01 (Windows projector run) and G-12 (Windows install).
+G-13 (CI) is resolved. G-02…G-06 and G-09 are waived for v1
 (software-verified, not hardware-verified) and kept here for the record.
 
 ### G-01 Projector output (P0 `output.fullscreen-display`)
@@ -56,9 +58,30 @@ used static content, so it could not show this). Fixed by show mode
 seconds. octv01 now auto-logs in, starts the show from a systemd user
 service and is controlled from the Mac over OSC/OSCQuery, including after
 a cold reboot with no input (owner's notes outside the repository).
-Hot-plug is waived for v1 (owner); still open: sleep/wake and the macOS
-and Windows projector runs (the fix also lifts a 10 fps cap they would
-have hit with `--play`).
+Hot-plug is waived for v1 (owner).
+**2026-10-09, CI archives of `2fab89a` (run 37894912943):**
+- *Projector sleep/wake, Linux — passed.* With the show running on
+  octv01, the owner put the XGIMI into standby and woke it. Each time
+  the HDMI hot-plug dropped for about 2 s (KWin removed and restored the
+  output once); the same process stayed fullscreen on the projector and
+  in front, the output kept moving and OSC kept answering, with nothing
+  to do by hand. A power-cycle at the wall was not tested (owner
+  declined). The computer itself does not sleep on a show machine
+  (suspend is disabled on octv01), so machine sleep was not tested.
+- *macOS projector run — passed.* MacBook Air (M4, macOS 26.6.2) drove
+  the XGIMI for 30 minutes with `openmapper <project> --play`. The owner
+  wanted it wireless, so the path was an AirPlay extended display
+  received by UxPlay on octv01 and shown on the projector over HDMI;
+  OpenMapper enumerated it as `octv01 (AirPlay)` (1920×1080 @ 60 Hz) and
+  show mode took it fullscreen. The burned-in timecode of the looping
+  60 s clip, read at 7 points over 27 minutes, matched wall-clock time
+  within ±17 ms (one frame at 30 fps is 33 ms; no drift and no gap at the
+  27 loop points); 57.3 fps delivered at the start, 57.9 at the end; RSS
+  389–455 MiB with no trend (418 MiB at the start, 406 MiB at the end).
+  Not covered: a directly cabled projector on macOS, so matching by its
+  EDID name was not exercised there.
+
+Still open: the Windows projector run.
 
 ### G-02 Camera input (P0 `live.camera`)
 A real camera on each OS, including the OS permission prompt (cannot be
@@ -134,12 +157,16 @@ where Actions are free: the repository was re-created as public
 `bailo167/openmapper` with the same tree and commits, re-authored to the
 owner's GitHub no-reply address (the private original is kept as
 `openmapperold`; commit IDs quoted in older entries refer to it). The first
-manual 3-OS run on the public repository (37894912943) built, smoke-tested
-and signed all three archives; its one failure, a 5 ms wall-clock bound in
-an audio unit test on the macOS runner, was a test that measured runner
+manual 3-OS run on the public repository (37894912943, on the 1.0.0 commit
+`2fab89a`) passed gate A, gate B on Windows, the `package` job on all
+three OSes (archives built, bundled FFmpeg checked, smoke-tested) and the
+keyless checksum signing. Its one failure, a 5 ms wall-clock bound in an
+audio unit test on the macOS runner, was a test that measured runner
 scheduling rather than blocking, and now uses a deliberately stalling
-decoder instead. **Remaining:** install the Linux CI archive of the 1.0.0
-commit on octv01 in place of the locally built one.
+decoder instead. On 2026-10-09 the CI Linux archive (`SHA256SUMS`
+verified) replaced the locally built one on octv01, which is kept beside
+it as `…-linux-x86_64.local-build`, and runs the show; the CI macOS
+archive ran the macOS projector test (G-01).
 
 
 ## Decided and implemented (owner-delegated)
