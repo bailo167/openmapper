@@ -544,3 +544,29 @@ Found in the first install of a release archive on the Linux show machine
   (`WAYLAND_DISPLAY`/`DISPLAY` unset) instead of the library's parse error.
 - The workspace version is **1.0.0**, and the release workflow refuses a
   `v*` tag whose archives were built with a different version.
+
+## D-035 — Reference licence archived; L3/L4 ruled out; Windows waived for 1.0 (2026-10-09)
+
+- **Licence agreement archived.** CLEANROOM.md requires the agreement
+  presented by the legitimately installed reference product to be archived
+  before a public release. The owner's MadMapperDemo 6.1.5 came from
+  `MadMapperDemo_Intel.dmg`, downloaded from madmapper.com on 2026-09-28;
+  the agreement is the DMG's Software License Agreement (RTF SHA-256
+  `c320383413f5b9fd4ff45c2afc8bbf9f5f9c6400b55941d069723bc32fb5a692`). It is
+  kept privately by the owner, not in this repository, because the text is
+  MADMAPPER SARL's copyright.
+- **What it says that matters here:** the licensee may not "modify, adapt,
+  translate, reverse engineer, decompile, or disassemble the Software"
+  (Swiss law governs). There is no clause on observing behaviour,
+  benchmarking or building a competing product. **Decision:** research
+  levels L3 (process capture, binary inventory) and L4 (decompilation,
+  disassembly) are no longer available for this product at all, rather
+  than "by ticket" and "exceptional"; only L0–L2 black-box work is.
+  Questions L0–L2 cannot answer are deferred. Neither repository has ever
+  had an L3/L4 ticket (no issues exist on either), so the existing record
+  is L0–L2 only; the private reference repository was not opened to check,
+  as this policy requires.
+- **Windows waived for 1.0 (owner, 2026-10-09):** the Windows clean-machine
+  install (G-12) and Windows projector run (G-01) are waived as
+  software-verified, not hardware-verified. The Windows archive is built,
+  bundled and smoke-tested by the CI `package` job on every release run.

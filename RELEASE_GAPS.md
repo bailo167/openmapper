@@ -1,10 +1,12 @@
 # Release gaps — OpenMapper 1.0
 
-**Verdict (2026-10-09): NOT READY — close.** Every software
-requirement is met. The owner waived the remaining hardware sign-offs for
-v1 as **"software-verified, not hardware-verified"** (DMX, MIDI,
-calibration, hot-plug, Windows/Linux cameras, NDI on Windows/Linux, the
-12–24 h soak), kept binaries unsigned for 1.0 (G-08) and waived the legal
+**Verdict (2026-10-09): READY — with the owner's waivers below; the owner
+gave the go-ahead to tag v1.0.0.** Every software requirement is met. The
+owner waived the remaining hardware sign-offs for v1 as
+**"software-verified, not hardware-verified"** (DMX, MIDI, calibration,
+hot-plug, Windows/Linux cameras, NDI on Windows/Linux, the 12–24 h soak,
+and on 2026-10-09 the Windows clean install and projector run), kept
+binaries unsigned for 1.0 (G-08) and waived the legal
 review (G-10). The release archives were installed and run on real
 machines for the first time (macOS, and the Linux show machine, which now
 boots into the show and is controlled from the Mac over OSC); that found
@@ -12,20 +14,20 @@ and fixed a P0 output bug (D-034). CI runs again (the repository is now
 public) and built, smoke-tested and signed the 1.0.0 archives on all
 three OSes (G-13, run 37894912943); the Linux one runs the show on
 octv01. The macOS projector run and projector sleep/wake passed on
-2026-10-09 (G-01). Still open: the Windows clean install and Windows
-projector run (G-12, G-01), and the owner's go-ahead to tag.
+2026-10-09 (G-01). The reference product's licence agreement was archived
+(D-035).
 Per prompts/10-release.md, a release is never made because a date arrived.
 
 Status of the gate (prompts/10-release.md):
 
 | Requirement | State |
 |---|---|
-| All P0/P1 parity rows verified or waived | **52 of 58 verified; 5 waived** for v1 as software-verified, not hardware-verified (owner, 2026-10-08: camera, NDI, DMX node, both calibration rows); `output.fullscreen-display` passes on Linux and macOS, Windows projector run open (G-01). 1 P2 row deferred (DeckLink, D-023). |
-| Clean macOS/Windows/Linux package install | Archive bundles an LGPL FFmpeg (D-031); `cargo xtask dist` verifies the bundle, `smoke` decodes video from the unpacked archive; CI `package` job on all three OSes. **macOS and Linux installs from the CI archive done 2026-10-08** (G-12); Windows pending. Binaries unsigned for 1.0, owner's decision (G-08). |
+| All P0/P1 parity rows verified or waived | **52 of 58 verified; 5 waived** for v1 as software-verified, not hardware-verified (owner, 2026-10-08: camera, NDI, DMX node, both calibration rows); `output.fullscreen-display` passes on Linux and macOS, Windows projector run waived (G-01). 1 P2 row deferred (DeckLink, D-023). |
+| Clean macOS/Windows/Linux package install | Archive bundles an LGPL FFmpeg (D-031); `cargo xtask dist` verifies the bundle, `smoke` decodes video from the unpacked archive; CI `package` job on all three OSes. **macOS and Linux installs from the CI archive done 2026-10-08** (G-12); Windows waived for v1 (owner, 2026-10-09). Binaries unsigned for 1.0, owner's decision (G-08). |
 | 12–24 h reference-system soak | Tooling ready (`openmapper-cli soak`, GPU resources + resident memory); 1-hour software soak passed (stable GPU resources; memory 343→361 MiB peak, to be confirmed flat over 12–24 h; docs/release/soak.md). **Waived for v1** by the owner (G-09). |
 | Crash/recovery injection tests | Verified: 40 random process kills per run, 600 locally (M9). |
 | Project migration tests | Verified: N-2 chain, v1 compatibility fixture (M9). |
-| Physical projector validation | **Linux passed**, including boot-into-show and projector sleep/wake; **macOS passed** (30 minutes over AirPlay) (G-01). Windows projector run open; physical calibration waived (G-04). |
+| Physical projector validation | **Linux passed**, including boot-into-show and projector sleep/wake; **macOS passed** (30 minutes over AirPlay) (G-01). Windows projector run waived; physical calibration waived (G-04). |
 | MIDI / DMX / live-I/O sign-off where hardware exists | Software verified on 3-OS CI (virtual MIDI, loopback DMX, Syphon, Spout); physical sign-off **waived for v1** by the owner (G-02, G-03, G-05, G-06). OSC/OSCQuery over a real LAN verified (Mac → octv01). |
 | Dependency / licence / NOTICE audit | Done: docs/release/licence-audit.md; `cargo deny` clean; `THIRD_PARTY_LICENSES.txt` generated into every archive, now including FFmpeg's notice and the NDI attribution. No legal confirmation (G-10 waived). |
 | FFmpeg distribution audit | **Decided and implemented** (G-07, D-031): bundled minimal LGPL build with source, recipe and policy check. |
@@ -37,8 +39,8 @@ Status of the gate (prompts/10-release.md):
 
 ## Blocking items
 
-Still blocking: G-01 (Windows projector run) and G-12 (Windows install).
-G-13 (CI) is resolved. G-02…G-06 and G-09 are waived for v1
+Nothing is blocking. G-13 (CI) is resolved; the Windows parts of G-01 and
+G-12 are waived for v1 (owner, 2026-10-09). G-02…G-06 and G-09 are waived for v1
 (software-verified, not hardware-verified) and kept here for the record.
 
 ### G-01 Projector output (P0 `output.fullscreen-display`)
@@ -81,7 +83,7 @@ Hot-plug is waived for v1 (owner).
   Not covered: a directly cabled projector on macOS, so matching by its
   EDID name was not exercised there.
 
-Still open: the Windows projector run.
+**Windows projector run waived for v1 (owner, 2026-10-09): software-verified, not hardware-verified.**
 
 ### G-02 Camera input (P0 `live.camera`)
 A real camera on each OS, including the OS permission prompt (cannot be
@@ -147,7 +149,8 @@ which the bundle check makes irrelevant for FFmpeg. Found: `openmapper
 network control could not be allowed without a screen; `displays` over SSH
 gave an unhelpful error; the build still said 0.1.0 — all fixed (D-034).
 Not exercised: the browser-download quarantine path on macOS (the archive
-came via `gh`). **Still open: Windows.**
+came via `gh`). **Windows waived for v1 (owner, 2026-10-09):** the CI
+`package` job builds, bundles and smoke-tests the Windows archive.
 
 ### G-13 CI was blocked by GitHub billing — resolved 2026-10-09
 From 2026-10-08 ~08:40 UTC GitHub refused to start Actions jobs on the
@@ -206,9 +209,11 @@ waiver, what software reduced (narrow decoder-only codec set, no external
 libraries, NDI attribution and non-affiliation, published provenance
 report, generated notices) and the residual risks the owner carries. No
 document in the repository claims legal clearance.
-**Remaining for the owner:** archive the reference product's licence
-agreement (CLEANROOM.md; no solicitor needed), and re-read the posture
-document before any commercial distribution.
+The reference product's licence agreement was archived on 2026-10-09
+(D-035; kept privately, not in this repository); it forbids reverse
+engineering, decompiling and disassembling, so CLEANROOM.md now allows only
+black-box research (L0–L2). **Remaining for the owner:** re-read the
+posture document before any commercial distribution.
 
 ## Recommended before a public release (not blocking)
 
@@ -228,5 +233,6 @@ recommended before wide distribution.
 | `calibration.physical-projector` | P0 | Owner, 2026-10-08: software-verified, not hardware-verified (G-04). |
 | `calibration.camera-assisted` | P1 | Owner, 2026-10-08: software-verified, not hardware-verified (G-04). |
 | MIDI controller, output hot-plug, 12–24 h soak | gate | Owner, 2026-10-08: software-verified, not hardware-verified (G-06, G-01, G-09). |
+| Windows clean install, Windows projector run | gate / P0 `output.fullscreen-display` (Windows) | Owner, 2026-10-09: software-verified, not hardware-verified (G-12, G-01). |
 | G-08 code signing | gate | Owner, 2026-10-08: unsigned for 1.0 (D-032). |
 | G-10 legal review | gate | Owner's decision (D-033, docs/release/legal-posture.md); risk reduced in software, residual risk accepted by the owner. |

@@ -31,7 +31,7 @@
   priority: P0
   status: implemented-unverified
   source: [public-doc]
-  platforms: { macos: pass, windows: pending, linux: pass }
+  platforms: { macos: pass, windows: waived, linux: pass }
   tests: [hardware: G-01 projector run]
   notes: >-
     Linux physical test 2026-10-08: XGIMI HORIZON 20 projector on octv01
@@ -58,5 +58,5 @@
     57.3 → 57.9 fps delivered at start/end; RSS 389–455 MiB with no trend.
     Not covered: a directly cabled projector on macOS (EDID name),
     projector power-cycle at the wall (owner declined), sleep of the
-    computer itself. Still open: Windows projector run.
+    computer itself. Windows projector run waived for v1 (owner, 2026-10-09).
   known_differences: []

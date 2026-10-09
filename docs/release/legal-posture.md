@@ -37,8 +37,13 @@ public with each release (see below).
    `ndi` is internal).
 3. **Clean-room.** The record shows process, not a legal opinion that the
    implementation is free of the reference product's protectable
-   expression. The reference-product licence agreement still needs to be
-   archived by the owner (CLEANROOM.md), which needs no solicitor.
+   expression. The reference-product licence agreement was archived on
+   2026-10-09 (D-035): it forbids reverse engineering, decompiling and
+   disassembling, so clean-room research is limited to black-box use
+   (CLEANROOM.md L0–L2), which is all the project has recorded. Whether
+   black-box observation itself counts as "reverse engineering" under that
+   Swiss-law agreement is untested; it is the question to put to counsel
+   if a rights holder ever objects.
 4. **LGPL mechanics.** A mistake in how source or notices are offered would
    be a compliance defect, curable by publishing what is missing.
 
