@@ -4,8 +4,8 @@ Source: "OpenMapper: Execution-Ready Research and Build Plan" (2026-10).
 This file keeps the parts future sessions need. Governance lives in
 AGENTS.md / CLEANROOM.md / PRODUCT.md; per-milestone prompts live in `prompts/`.
 
-**Principle: build the product first; use MadMapper as a reference oracle, not
-as source material.**
+**Principle: build the product first; use the reference product as an oracle,
+not as source material.**
 
 ## Stack
 
@@ -124,7 +124,7 @@ known_differences: []
 | CPU reference output | exact or ≤1 8-bit LSB |
 | GPU golden, flat interior | mean abs ≤0.25/255; max normally ≤1/255 |
 | Transformed edge | displacement ≤1 px |
-| Licensed MadMapper reference | mean abs ≤0.5/255; p99.9 ≤2/255 |
+| Licensed reference-product output | mean abs ≤0.5/255; p99.9 ≤2/255 |
 | Demo-watermark reference | watermark masked; geometry separately; relaxed colour |
 | Video timing | exact logical frame/PTS; zero cumulative drift |
 | Cue/timeline state | exact state and ordering |
@@ -134,10 +134,10 @@ with separate interior/edge masks; never rely on SSIM alone.
 
 ## Oracle
 
-Neutral experiment YAML → driven against both MadMapper (OSC/OSCQuery +
+Neutral experiment YAML → driven against both the reference product (OSC/OSCQuery +
 capture, in `openmapper-reference`) and OpenMapper (CLI + offscreen render) →
 frame/state diff → neutral behaviour database. Vary one parameter at a time
-first. Use the free MadMapper demo for discovery; rent the €39 month only once
+first. Use the reference product's free demo for discovery; rent the €39 month only once
 the OSCQuery dumper, state-diff recorder, capture automation, fixtures, 100+
 queued experiments, frame-diff tool and parity DB are ready.
 

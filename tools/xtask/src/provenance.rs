@@ -94,10 +94,28 @@ impl Rules {
             artefact: Regex::new(
                 r"\b(FUN|DAT|LAB|PTR|thunk_FUN)_[0-9a-fA-F]{6,}\b|\bsub_[0-9a-fA-F]{5,}\b|\bloc_[0-9a-fA-F]{5,}\b",
             )?,
-            product: Regex::new(r"(?i)mad\s*mapper|minimad|garagecube")?,
+            product: Regex::new(&format!(
+                r"(?i){}\s*{}|{}|{}",
+                rot13("znq"),
+                rot13("znccre"),
+                rot13("zvavznq"),
+                rot13("tnentrphor")
+            ))?,
             third_party: b.build()?,
         })
     }
+}
+
+/// The reference product's names are kept ROT13-encoded so that the public
+/// tree, this scanner included, never spells them out.
+fn rot13(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            'a'..='z' => char::from((c as u8 - b'a' + 13) % 26 + b'a'),
+            'A'..='Z' => char::from((c as u8 - b'A' + 13) % 26 + b'A'),
+            _ => c,
+        })
+        .collect()
 }
 
 fn extension(path: &str) -> String {
@@ -133,11 +151,12 @@ fn check_file(rules: &Rules, path: &str, content: Option<&str>, f: &mut Findings
     if let Some(m) = rules.artefact.find(text) {
         f.push(path, format!("decompiler-style symbol `{}`", m.as_str()));
     }
-    let is_markdown = matches!(ext.as_str(), "md" | "markdown");
-    if !is_markdown && rules.product.is_match(text) {
+    // Since the repository became public (D-036) the current tree names the
+    // reference product nowhere, Markdown included; only history may.
+    if rules.product.is_match(text) {
         f.push(
             path,
-            "reference product named outside Markdown documentation",
+            "reference product named (write \"the reference product\")",
         );
     }
     if ext == "rs" && !text.starts_with(SPDX) && !rules.third_party.is_match(path) {
@@ -380,11 +399,23 @@ mod tests {
         );
     }
 
+    /// Regression (D-036): Markdown in the current tree may no longer name
+    /// the reference product; old Markdown in history still may.
     #[test]
-    fn product_name_only_in_markdown() {
-        let text = "// SPDX-License-Identifier: Apache-2.0\n// like MadMapper does\n";
-        assert!(!findings("crates/a/src/lib.rs", Some(text)).is_empty());
-        assert!(findings("docs/behaviour/x.md", Some("MadMapper parity")).is_empty());
+    fn product_name_rejected_in_current_tree_allowed_in_old_markdown() {
+        let name = format!("{}{}", rot13("Znq"), rot13("Znccre"));
+        let text = format!("// SPDX-License-Identifier: Apache-2.0\n// like {name} does\n");
+        assert!(!findings("crates/a/src/lib.rs", Some(&text)).is_empty());
+        assert!(!findings("docs/x.md", Some(&format!("{name} parity"))).is_empty());
+        assert!(!findings("docs/x.md", Some(&rot13("tnentrphor.pbz"))).is_empty());
+        assert!(findings("docs/x.md", Some("the reference product")).is_empty());
+
+        let rules = Rules::new("").unwrap();
+        let mut f = Findings::default();
+        check_historic(&rules, "docs/x.md", Some(&format!("{name} parity")), &mut f);
+        assert!(f.0.is_empty(), "{:?}", f.0);
+        check_historic(&rules, "a.rs", Some(&text), &mut f);
+        assert_eq!(f.0.len(), 1);
     }
 
     #[test]

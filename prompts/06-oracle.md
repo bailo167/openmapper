@@ -1,14 +1,14 @@
 ROLE: Reference Researcher.
 REPOSITORY: openmapper-reference ONLY.
 
-TASK: Build a declarative MadMapper behavioural oracle without inspecting
+TASK: Build a declarative behavioural oracle of the reference product without inspecting
 implementation source.
 
 Use official documentation first. Use OSC/OSCQuery to enumerate observable
 state. Drive deterministic fixtures and capture output frames/state.
 
 For each experiment:
-- record MadMapper version and licence mode;
+- record the reference product's version and licence mode;
 - record exact input;
 - vary one parameter first;
 - retain raw evidence in this private repository;

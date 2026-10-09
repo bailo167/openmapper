@@ -3,8 +3,9 @@
 **OpenMapper is an open-source, production-grade, cross-platform system for
 projection mapping, live visuals, show control, LED/DMX mapping and real-time
 media output. It uses an independently implemented Rust engine, supports
-standard creative-media protocols and formats, and targets MadMapper-class
-capability and reliability as the minimum 1.0 product class.**
+standard creative-media protocols and formats, and targets the capability
+and reliability of established commercial mapping tools as the minimum 1.0
+product class.**
 
 "Parity" means workflow and observable-function parity where useful — not a
 byte-compatible, UI-identical or project-file-compatible clone.
@@ -34,7 +35,7 @@ explicit OpenMapper extension namespace.
 
 - No AI/LLM/MCP functionality in the shipped product. AI tooling is development
   machinery only.
-- No MadMapper icons, imagery, shader libraries, example projects, presets or UI
+- No reference-product icons, imagery, shader libraries, example projects, presets or UI
   artwork.
 - No proprietary project-file import in 1.0.
 

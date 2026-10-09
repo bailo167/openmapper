@@ -549,12 +549,13 @@ Found in the first install of a release archive on the Linux show machine
 
 - **Licence agreement archived.** CLEANROOM.md requires the agreement
   presented by the legitimately installed reference product to be archived
-  before a public release. The owner's MadMapperDemo 6.1.5 came from
-  `MadMapperDemo_Intel.dmg`, downloaded from madmapper.com on 2026-09-28;
+  before a public release. The owner's installed demo version came from
+  the vendor's installer image, downloaded from the vendor's website on
+  2026-09-28;
   the agreement is the DMG's Software License Agreement (RTF SHA-256
   `c320383413f5b9fd4ff45c2afc8bbf9f5f9c6400b55941d069723bc32fb5a692`). It is
   kept privately by the owner, not in this repository, because the text is
-  MADMAPPER SARL's copyright.
+  the vendor's copyright.
 - **What it says that matters here:** the licensee may not "modify, adapt,
   translate, reverse engineer, decompile, or disassemble the Software"
   (Swiss law governs). There is no clause on observing behaviour,
@@ -570,3 +571,14 @@ Found in the first install of a release archive on the Linux show machine
   install (G-12) and Windows projector run (G-01) are waived as
   software-verified, not hardware-verified. The Windows archive is built,
   bundled and smoke-tested by the CI `package` job on every release run.
+
+## D-036 — The public tree does not name the reference product (2026-10-09)
+
+The repository is public since 2026-10-09. To keep the project's identity
+independent and avoid any appearance of trading on another product's name,
+no file in the current tree names the reference product or its vendor any
+more; documents say "the reference product". The provenance scan enforces
+it for every file, Markdown included (previously Markdown was exempt), and
+stores the names it looks for ROT13-encoded so that the scanner itself does
+not spell them out. History is not rewritten: old Markdown that names the
+product remains, and the history scan still allows it there.

@@ -6,7 +6,7 @@ OpenMapper GPU shader path, provide TIME/TIMEDELTA/RENDERSIZE-equivalent
 standard semantics where required by ISF, and implement image filters and
 generators.
 
-Do not reproduce MadMapper proprietary shader-library code or assets.
+Do not reproduce the reference product's proprietary shader-library code or assets.
 
 Create a conformance corpus from original minimal shaders exercising every
 supported input type and multipass behaviour.

@@ -5,7 +5,7 @@ Create a stable OpenMapper OSC namespace generated from command/property
 metadata. Expose address, type, access, value and range through OSCQuery.
 Implement discovery and UDP OSC transport.
 
-Do not hard-code MadMapper's address namespace into core APIs.
+Do not hard-code the reference product's address namespace into core APIs.
 Any future compatibility profile must be a separately generated adapter.
 
 Build protocol tests that enumerate every exposed OpenMapper property,

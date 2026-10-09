@@ -7,7 +7,7 @@ clean macOS/Windows/Linux package install; 12-24 hour reference-system soak;
 project crash/recovery injection tests; project migration tests; physical
 projector validation; MIDI/DMX/live-I/O sign-off where hardware exists;
 dependency/licence/NOTICE audit; FFmpeg distribution audit; clean-room evidence
-audit; no MadMapper proprietary artefacts in repository history; security
+audit; no reference-product proprietary artefacts in repository history; security
 review of WASM and FFI boundaries; user documentation; signed checksum generation.
 
 If a requirement fails, create a release-blocking issue and return NOT READY.
