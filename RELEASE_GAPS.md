@@ -8,10 +8,10 @@ calibration, hot-plug, Windows/Linux cameras, NDI on Windows/Linux, the
 review (G-10). The release archives were installed and run on real
 machines for the first time (macOS, and the Linux show machine, which now
 boots into the show and is controlled from the Mac over OSC); that found
-and fixed a P0 output bug (D-034). Still open: CI release archives of the
-1.0.0 commit (GitHub Actions is blocked by account billing, G-13), the
-Windows clean install and macOS/Windows projector runs (G-12, G-01), and
-the owner's go-ahead to tag.
+and fixed a P0 output bug (D-034). CI runs again (G-13 resolved
+2026-10-09: the repository is now public). Still open: installing the CI
+archive of the 1.0.0 commit on octv01, the Windows clean install and
+macOS/Windows projector runs (G-12, G-01), and the owner's go-ahead to tag.
 Per prompts/10-release.md, a release is never made because a date arrived.
 
 Status of the gate (prompts/10-release.md):
@@ -35,8 +35,8 @@ Status of the gate (prompts/10-release.md):
 
 ## Blocking items
 
-Still blocking: G-01 (macOS/Windows projector runs, sleep/wake), G-12
-(Windows install) and G-13 (CI). G-02…G-06 and G-09 are waived for v1
+Still blocking: G-01 (macOS/Windows projector runs, sleep/wake) and G-12
+(Windows install). G-13 (CI) is resolved. G-02…G-06 and G-09 are waived for v1
 (software-verified, not hardware-verified) and kept here for the record.
 
 ### G-01 Projector output (P0 `output.fullscreen-display`)
@@ -126,15 +126,20 @@ gave an unhelpful error; the build still said 0.1.0 — all fixed (D-034).
 Not exercised: the browser-download quarantine path on macOS (the archive
 came via `gh`). **Still open: Windows.**
 
-### G-13 CI is blocked by GitHub billing
-Since 2026-10-08 ~08:40 UTC GitHub refuses to start Actions jobs on this
-repository ("recent account payments have failed or your spending limit
-needs to be increased"). The 1.0.0 commit therefore has no CI run and no CI
-release archives; it passed `cargo xtask ci` locally (macOS), and octv01
-runs an archive built from it on octv01 with the same `cargo xtask dist`
-and `smoke` steps. **Owner:** fix billing (or add a self-hosted runner,
-e.g. ocai01), then dispatch `ci.yml` and install its Linux archive on
-octv01.
+### G-13 CI was blocked by GitHub billing — resolved 2026-10-09
+From 2026-10-08 ~08:40 UTC GitHub refused to start Actions jobs on the
+private repository ("recent account payments have failed or your spending
+limit needs to be increased"). The owner chose to make the project public,
+where Actions are free: the repository was re-created as public
+`bailo167/openmapper` with the same tree and commits, re-authored to the
+owner's GitHub no-reply address (the private original is kept as
+`openmapperold`; commit IDs quoted in older entries refer to it). The first
+manual 3-OS run on the public repository (37894912943) built, smoke-tested
+and signed all three archives; its one failure, a 5 ms wall-clock bound in
+an audio unit test on the macOS runner, was a test that measured runner
+scheduling rather than blocking, and now uses a deliberately stalling
+decoder instead. **Remaining:** install the Linux CI archive of the 1.0.0
+commit on octv01 in place of the locally built one.
 
 
 ## Decided and implemented (owner-delegated)

@@ -442,19 +442,44 @@ mod tests {
         );
     }
 
+    /// A decoder that takes a second per block: a mixer that waited for it
+    /// would take that long, so the bound below proves "does not block"
+    /// without depending on how quickly a busy CI machine schedules threads.
+    struct Stalling(Ramp);
+
+    impl AudioSource for Stalling {
+        fn format(&self) -> AudioFormat {
+            self.0.format()
+        }
+        fn length(&self) -> Option<i64> {
+            self.0.length()
+        }
+        fn seek(&mut self, frame: i64) -> Result<(), MediaError> {
+            self.0.seek(frame)
+        }
+        fn next_block(&mut self) -> Result<Option<AudioBlock>, MediaError> {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            self.0.next_block()
+        }
+    }
+
     #[test]
     fn missing_samples_are_silence_not_blocking() {
         let p = AudioPlayer::spawn(
-            Ramp {
+            Stalling(Ramp {
                 pos: 0,
                 len: 480_000,
-            },
+            }),
             4096,
         );
         let start = std::time::Instant::now();
         let mut out = vec![0.5; 512];
         p.mix_into(300_000, &mut out, 1.0); // not buffered yet
-        assert!(start.elapsed() < std::time::Duration::from_millis(5));
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(500),
+            "mix_into waited for the decoder: {:?}",
+            start.elapsed()
+        );
         assert!(out.iter().all(|s| *s == 0.5), "nothing mixed in");
         assert!(p.underruns() >= 1);
     }
